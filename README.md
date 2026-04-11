@@ -1,20 +1,198 @@
-Loom is a Tauri-based desktop application that acts as an AI-powered code analysis and visualization tool. It maps out the structure of a codebase (both locally and via GitHub URLs) and renders it into a 3D interactive graph. It uses a local AI engine (Ollama with the gemma4:e2b model) to inspect and explain selected code segments.
+# Loom — Architecture Overview
 
-Architecture
-1. Backend (server/main.py):
+**Loom** is a **Tauri-based desktop application** that acts as an **AI-powered code analysis and visualization tool**.
 
-Framework: Built with FastAPI.
-Code Parsing: It maps entire repositories by parsing various languages (Python via AST, and others like JS, TS, C++, Java, Go, Rust via regex). It extracts symbols like classes, functions, and interfaces.
-Graph Generation: Constructs a deep call graph mapping the relationships between files, functions, and classes. It intelligently detects Strongly Connected Components (SCCs) to handle recursive calls or circular dependencies (detect_sccs).
-Flow Analysis: Exposes endpoints for rendering upstream (/reverse-call-flow) and downstream (/forward-call-flow) call graphs to dynamically show how specific functions are executed or what they execute.
-AI Integration: Endpoint (/get-details) queries a locally hosted Ollama instance to generate deep analysis for a specific block of code based on the generated codebase context.
-2. Frontend (client/src/App.js):
+It maps out the structure of a codebase (both locally and via GitHub URLs) and renders it into a **3D interactive graph**.
 
-Framework: Built with React and @tauri-apps/api.
-Visualization: Leverages @react-three/fiber and @react-three/drei to render an interactive, 3-dimensional force-directed layout of the codebase where files and symbols are represented as interconnected orbs.
-Interactivity: Users can switch between the "map" (full repo) and "callers" (specific node hierarchy) views. Features include keyboard shortcuts for navigation, deep inspection controls, zooming into portions of the system, and exporting the state as an SVG or JSON.
-Source Control Context: Integrates directly with Git to pull the working-tree status, highlighting modified and added files inside the 3D grid.
-3. Application Lifecycle Management (client/src/OllamaInstaller.js and GitInstaller.js):
+It uses a **local AI engine** (**Ollama** with the `gemma4:e2b` model) to inspect and explain selected code segments.
 
-Uses Tauri shell commands to silently verify if Git and Ollama (including the specific gemma4:e2b model) are present on the user's system by checking standard Windows installation paths or the PATH variable.
-Features built-in installers that will fetch and install these dependencies using an automated PowerShell script if they are missing at launch.
+---
+
+# Architecture
+
+## 1. Backend (`server/main.py`)
+
+**Framework:**
+Built with **FastAPI**.
+
+### Code Parsing
+
+Maps entire repositories by parsing multiple languages:
+
+* **Python** — via **AST**
+* **JavaScript, TypeScript, C++, Java, Go, Rust** — via **regex**
+
+Extracted symbols include:
+
+* Classes
+* Functions
+* Interfaces
+* Modules
+
+---
+
+### Graph Generation
+
+Constructs a **deep call graph** mapping relationships between:
+
+* Files
+* Functions
+* Classes
+
+Implements detection of:
+
+* **Strongly Connected Components (SCCs)**
+  (`detect_sccs`)
+
+This enables correct handling of:
+
+* Recursive calls
+* Circular dependencies
+
+---
+
+### Flow Analysis
+
+Exposes endpoints to dynamically visualize execution relationships:
+
+* `/reverse-call-flow`
+  → Renders **upstream** call graphs
+  → Shows **what calls a function**
+
+* `/forward-call-flow`
+  → Renders **downstream** call graphs
+  → Shows **what a function calls**
+
+---
+
+### AI Integration
+
+Endpoint:
+
+```
+/get-details
+```
+
+Queries a locally hosted **Ollama** instance to generate:
+
+* Deep analysis of specific code blocks
+* Context-aware explanations using full codebase structure
+
+---
+
+## 2. Frontend (`client/src/App.js`)
+
+**Framework:**
+
+* **React**
+* `@tauri-apps/api`
+
+---
+
+### Visualization
+
+Uses:
+
+* `@react-three/fiber`
+* `@react-three/drei`
+
+To render:
+
+* **Interactive 3D force-directed layouts**
+* Codebase structure as:
+
+  * Nodes → files & symbols
+  * Edges → relationships
+
+Displayed visually as **interconnected orbs**.
+
+---
+
+### Interactivity
+
+Users can:
+
+* Switch between views:
+
+  * **Map View** → Full repository
+  * **Callers View** → Node-specific hierarchy
+
+Features include:
+
+* Keyboard navigation shortcuts
+* Deep inspection controls
+* Zooming into graph regions
+* Export options:
+
+  * SVG
+  * JSON
+
+---
+
+### Source Control Context
+
+Integrates directly with **Git** to:
+
+* Pull working-tree status
+* Highlight:
+
+  * Modified files
+  * Newly added files
+
+Inside the **3D visualization grid**.
+
+---
+
+## 3. Application Lifecycle Management
+
+(`client/src/OllamaInstaller.js` and `GitInstaller.js`)
+
+Handles dependency verification and installation.
+
+---
+
+### Dependency Detection
+
+Uses **Tauri shell commands** to silently verify:
+
+* **Git**
+* **Ollama**
+* Required model:
+
+  ```
+  gemma4:e2b
+  ```
+
+Checks:
+
+* Standard Windows installation paths
+* System `PATH` variable
+
+---
+
+### Automated Installation
+
+If dependencies are missing:
+
+* Built-in installers execute automatically
+* Uses **PowerShell scripts**
+* Fetches and installs:
+
+  * Git
+  * Ollama
+  * Required model
+
+This process runs **silently at application launch**.
+
+---
+
+## Key Technologies
+
+- Tauri
+- FastAPI
+- React
+- Three.js (@react-three/fiber)
+- Ollama (Local LLM inference)
+- Python AST
+- Regex-based parsing
+- Git integration
