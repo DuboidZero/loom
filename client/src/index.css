@@ -1,0 +1,1233 @@
+/* ============================================
+   LOOM - Developer Tool UI Theme
+   Professional code visualization interface
+   ============================================ */
+
+/* === Design Tokens === */
+:root {
+  /* Base Palette */
+  --bg-primary: #0a0a0b;
+  --bg-secondary: #121214;
+  --bg-tertiary: #18181b;
+  --border-subtle: #1f1f23;
+  --border-default: #2a2a2e;
+  --border-emphasis: #3a3a3e;
+
+  /* Text Hierarchy */
+  --text-primary: #e8e8ea;
+  --text-secondary: #a0a0a5;
+  --text-tertiary: #6a6a70;
+  --text-disabled: #4a4a50;
+
+  /* Accent (Lime Green) */
+  --accent-primary: #a3ff5c;
+  --accent-muted: rgba(163, 255, 92, 0.2);
+  --accent-hover: #b5ff7a;
+
+  /* Semantic */
+  --error: #ff6b6b;
+  --warning: #ffa94d;
+  --info: #5c9cff;
+
+  /* Typography */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+
+  /* Animation */
+  --transition-fast: 150ms cubic-bezier(0.2, 0, 0.2, 1);
+  --transition-base: 250ms cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+/* === Reset & Base === */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* === Typography === */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* === Scrollbar === */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-emphasis);
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* === Selection === */
+::selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+::-moz-selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+/* === Focus Styles === */
+button:focus,
+input:focus,
+select:focus {
+  outline: 2px solid var(--accent-muted);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* === Input Placeholders === */
+input::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
+}
+
+/* === Animations === */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* === Canvas === */
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* === Utility Classes === */
+.uppercase {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.text-muted {
+  color: var(--text-tertiary);
+}
+
+.text-accent {
+  color: var(--accent-primary);
+}
+
+.border-accent {
+  border-color: var(--accent-primary) !important;
+}
+
+.installer-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: fadeIn var(--transition-base);
+}
+
+.installer-container {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: var(--space-xl) 48px;
+  max-width: 420px;
+  width: 90%;
+  text-align: center;
+  animation: slideDown 0.3s ease-out;
+}
+
+.installer-logo {
+  margin-bottom: var(--space-lg);
+}
+
+.installer-logo svg {
+  opacity: 0.9;
+}
+
+.installer-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.installer-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.installer-description {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: var(--space-sm) 0 var(--space-md);
+}
+
+.installer-buttons {
+  display: flex;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+}
+
+.installer-btn-primary {
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  border: none;
+  padding: 10px 24px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all var(--transition-fast);
+}
+
+.installer-btn-primary:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.installer-btn-secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  padding: 10px 24px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all var(--transition-fast);
+}
+
+.installer-btn-secondary:hover {
+  border-color: var(--text-tertiary);
+  color: var(--text-primary);
+}
+
+.installer-progress-container {
+  width: 100%;
+  margin: var(--space-lg) 0;
+}
+
+.installer-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.installer-progress-fill {
+  height: 100%;
+  background: var(--accent-primary);
+  border-radius: 3px;
+  transition: width 0.4s ease-out;
+  box-shadow: 0 0 12px var(--accent-muted);
+}
+
+.installer-status {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: var(--space-sm);
+  animation: pulse 1.5s infinite;
+}
+
+.installer-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-top: var(--space-md);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.installer-success-icon {
+  width: 64px;
+  height: 64px;
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: bold;
+  margin-bottom: var(--space-md);
+  animation: scaleIn 0.3s ease-out;
+}
+
+.installer-error-icon {
+  width: 64px;
+  height: 64px;
+  background: var(--error);
+  color: var(--bg-primary);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: bold;
+  margin-bottom: var(--space-md);
+}
+
+.installer-error-text {
+  color: var(--error);
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* ============================================
+   TOP MENU BAR — VSCode-style slim menu
+   ============================================ */
+
+.top-menubar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  background: #1f1f1f;
+  border-bottom: 1px solid #252526;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  z-index: 2000;
+  user-select: none;
+  flex-shrink: 0;
+  overflow: visible; /* allow dropdowns to escape the nav bounds */
+}
+
+.top-menubar__brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 100%;
+  cursor: pointer;
+  border-right: 1px solid #252526;
+}
+
+.top-menubar__logo {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  opacity: 0.85;
+}
+
+.top-menubar__title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #ccc;
+  font-family: var(--font-mono);
+}
+
+.top-menubar__item {
+  position: relative;
+  height: 100%;
+}
+
+.top-menubar__btn {
+  height: 100%;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  color: #ccc;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.top-menubar__btn:hover,
+.top-menubar__btn--open {
+  background: #2a2d2e;
+  color: #fff;
+}
+
+.top-menubar__dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 220px;
+  background: #252526;
+  border: 1px solid #3c3c3c;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+  z-index: 3000;
+  padding: 4px 0;
+  animation: slideDown 0.12s ease;
+}
+
+.top-menubar__dropdown--right {
+  left: auto;
+  right: 0;
+  min-width: 180px;
+  width: max-content;
+}
+
+.top-menubar__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 20px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: #ccc;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  white-space: nowrap;
+}
+
+.top-menubar__menu-item:hover {
+  background: #094771;
+  color: #fff;
+}
+
+.top-menubar__menu-item--danger:hover {
+  background: rgba(200, 50, 50, 0.3);
+  color: #f56;
+}
+
+.top-menubar__menu-sep {
+  height: 1px;
+  background: #3c3c3c;
+  margin: 4px 0;
+}
+
+.top-menubar__menu-section {
+  padding: 3px 20px 2px;
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.top-menubar__menu-item--active {
+  color: var(--accent-primary);
+}
+
+.top-menubar__spacer {
+  flex: 1;
+}
+
+/* GitHub URL modal in top bar */
+.top-menubar__github-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 4000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 80px;
+}
+
+.top-menubar__github-modal {
+  background: #252526;
+  border: 1px solid #3c3c3c;
+  padding: 20px 24px;
+  width: 480px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  animation: slideDown 0.15s ease;
+}
+
+.top-menubar__github-modal h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ccc;
+  margin-bottom: 12px;
+  font-family: var(--font-mono);
+}
+
+.top-menubar__github-modal-row {
+  display: flex;
+  gap: 8px;
+}
+
+.top-menubar__github-input {
+  flex: 1;
+  background: #3c3c3c;
+  border: 1px solid #555;
+  color: #fff;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.top-menubar__github-input:focus {
+  border-color: var(--accent-primary);
+}
+
+.top-menubar__github-submit {
+  background: var(--accent-primary);
+  border: none;
+  color: #000;
+  padding: 7px 16px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.top-menubar__github-submit:hover {
+  background: var(--accent-hover);
+}
+
+.top-menubar__github-cancel {
+  background: transparent;
+  border: 1px solid #555;
+  color: #aaa;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.top-menubar__github-cancel:hover {
+  border-color: #888;
+  color: #ccc;
+}
+
+/* ============================================
+   APP SHELL — layout wrapper
+   ============================================ */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  margin-top: 30px;  /* height of top-menubar */
+}
+
+.app-canvas-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ============================================
+   SIDEBAR — VSCode Explorer
+   ============================================ */
+
+.sidebar {
+  width: 260px;
+  min-width: 180px;
+  max-width: 400px;
+  height: 100%;
+  background: #252526;
+  border-right: 1px solid #1e1e1e;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.sidebar-explorer-header {
+  padding: 8px 12px 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-explorer-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #bbb;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.sidebar-workspace-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 4px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ccc;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.sidebar-workspace-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+/* --- Search + Filter row --- */
+
+.sidebar-search-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-search-container {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-search-icon {
+  position: absolute;
+  left: 7px;
+  color: #888;
+  pointer-events: none;
+}
+
+.sidebar-search-input {
+  width: 100%;
+  background: #3c3c3c;
+  border: 1px solid transparent;
+  color: #ccc;
+  padding: 4px 8px 4px 24px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  outline: none;
+  border-radius: 2px;
+  transition: border-color var(--transition-fast);
+}
+
+.sidebar-search-input:focus {
+  border-color: #007fd4;
+  background: #3c3c3c;
+}
+
+.sidebar-search-input::placeholder {
+  color: #666;
+}
+
+.sidebar-filter-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #888;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+  position: relative;
+}
+
+.sidebar-filter-btn:hover {
+  background: #2a2d2e;
+  color: #ccc;
+}
+
+.sidebar-filter-btn--active {
+  background: #094771;
+  color: #fff;
+}
+
+.sidebar-filter-btn--dirty {
+  color: var(--accent-primary);
+}
+
+.sidebar-filter-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  background: var(--accent-primary);
+  color: #000;
+  font-size: 8px;
+  font-weight: 700;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Filter popover --- */
+
+.sidebar-filter-panel {
+  background: #2d2d2d;
+  border-top: 1px solid #3c3c3c;
+  border-bottom: 1px solid #3c3c3c;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  animation: slideDown 0.12s ease;
+}
+
+.sidebar-filter-section {
+  margin-bottom: 8px;
+}
+
+.sidebar-filter-section:last-child {
+  margin-bottom: 0;
+}
+
+.sidebar-filter-section-title {
+  font-size: 9px;
+  color: #666;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.sidebar-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #ccc;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.sidebar-filter-item input[type="checkbox"] {
+  width: 12px;
+  height: 12px;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.sidebar-filter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* --- Tree --- */
+
+.sidebar-tree {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 32px;
+}
+
+.sidebar-empty {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: #555;
+  font-style: italic;
+}
+
+/* --- Tree rows --- */
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #cccccc;
+  transition: background 80ms;
+  white-space: nowrap;
+  overflow: hidden;
+  padding-right: 8px;
+}
+
+.tree-row:hover {
+  background: #2a2d2e;
+}
+
+.tree-row--active {
+  background: #094771 !important;
+  color: #ffffff;
+}
+
+.tree-row--dir {
+  font-weight: 500;
+  color: #ccc;
+}
+
+.tree-row--file {
+  color: #ccc;
+}
+
+.tree-row--class {
+  color: #4EC9B0;
+}
+
+.tree-row--symbol {
+  color: #ccc;
+}
+
+.tree-chevron {
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #858585;
+}
+
+.tree-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.tree-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.tree-label--function {
+  color: #DCDCAA;
+}
+
+.tree-label--class {
+  color: #4EC9B0;
+}
+
+.tree-label--interface {
+  color: #C792EA;
+}
+
+.tree-label--struct {
+  color: #56B6C2;
+}
+
+.tree-badge {
+  font-size: 10px;
+  color: #666;
+  margin-left: auto;
+  padding-right: 4px;
+}
+
+/* ============================================
+   WELCOME SCREEN
+   ============================================ */
+
+.welcome-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #1e1e1e;
+  overflow: hidden;
+  min-height: calc(100vh - 30px); /* 30px = top menubar height */
+  width: 100%;
+}
+
+.welcome-bg-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+.welcome-content {
+  position: relative;
+  width: 640px;
+  max-width: 90%;
+  animation: fadeIn 0.4s ease;
+}
+
+.welcome-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 40px;
+}
+
+.welcome-logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 12px rgba(163,255,92,0.35));
+}
+
+.welcome-title {
+  font-size: 36px;
+  font-weight: 300;
+  letter-spacing: 0.2em;
+  color: #fff;
+  font-family: var(--font-mono);
+  margin: 0;
+}
+
+.welcome-subtitle {
+  font-size: 13px;
+  color: #888;
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+}
+
+.welcome-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+}
+
+.welcome-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.welcome-panel-header {
+  font-size: 13px;
+  font-weight: 400;
+  color: #ccc;
+  font-family: var(--font-mono);
+  margin: 0 0 8px;
+  border-bottom: 1px solid #333;
+  padding-bottom: 6px;
+}
+
+.welcome-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.welcome-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: #4fc1ff;
+  text-align: left;
+  width: 100%;
+  transition: background var(--transition-fast);
+}
+
+.welcome-action-btn:hover {
+  background: #2a2d2e;
+  color: #79d1ff;
+}
+
+.welcome-action-btn--static {
+  cursor: default;
+  color: #4fc1ff;
+}
+
+.welcome-action-btn--static:hover {
+  background: transparent;
+}
+
+.welcome-action-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.welcome-action-label {
+  flex: 1;
+}
+
+/* GitHub sub-section */
+.welcome-github-section {
+  margin-top: 4px;
+}
+
+.welcome-github-input-row {
+  display: flex;
+  gap: 6px;
+  padding: 4px 10px 4px 36px;
+  margin-top: 4px;
+}
+
+.welcome-github-input {
+  flex: 1;
+  background: #3c3c3c;
+  border: 1px solid #555;
+  color: #fff;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  outline: none;
+  border-radius: 2px;
+  transition: border-color var(--transition-fast);
+}
+
+.welcome-github-input:focus {
+  border-color: var(--accent-primary);
+}
+
+.welcome-github-btn {
+  background: var(--accent-primary);
+  border: none;
+  color: #000;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background var(--transition-fast);
+}
+
+.welcome-github-btn:hover {
+  background: var(--accent-hover);
+}
+
+.welcome-github-error {
+  font-size: 11px;
+  color: var(--error);
+  padding: 2px 36px;
+  margin: 0;
+}
+
+/* Recent workspaces */
+.welcome-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.welcome-recent-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 3px;
+  text-align: left;
+  font-family: var(--font-mono);
+  transition: background var(--transition-fast);
+}
+
+.welcome-recent-item:hover {
+  background: #2a2d2e;
+}
+
+.welcome-recent-name {
+  font-size: 13px;
+  color: #4fc1ff;
+}
+
+.welcome-recent-path {
+  font-size: 11px;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+
+/* ============================================
+   LOADING OVERLAY (for scan in progress)
+   ============================================ */
+.scan-loading-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  background: var(--accent-primary);
+  width: 0%;
+  animation: loadingBar 1.5s ease-in-out infinite;
+  box-shadow: 0 0 8px var(--accent-primary);
+  z-index: 600;
+}
+
+@keyframes loadingBar {
+  0%   { width: 0%; left: 0; }
+  50%  { width: 60%; left: 20%; }
+  100% { width: 0%; left: 100%; }
+}
+
+/* ============================================
+   SIDEBAR — Collapsed strip & collapse button
+   ============================================ */
+
+.sidebar--collapsed {
+  width: 40px;
+  min-width: 40px;
+  max-width: 40px;
+  align-items: center;
+  padding-top: 8px;
+  gap: 0;
+}
+
+.sidebar-collapse-btn {
+  background: transparent;
+  border: none;
+  color: #666;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0;
+  transition: color var(--transition-fast), background var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.sidebar-collapse-btn:hover {
+  color: #ccc;
+  background: #2a2d2e;
+}
+
+.sidebar-collapse-btn--expand {
+  width: 36px;
+  height: 36px;
+  color: #888;
+}
+
+.sidebar-collapse-btn--expand:hover {
+  color: var(--accent-primary);
+  background: rgba(163,255,92,0.08);
+}
+
+/* Welcome screen label row (GitHub section) */
+.welcome-action-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+}

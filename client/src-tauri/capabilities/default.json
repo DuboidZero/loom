@@ -1,0 +1,47 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Allow Loom UI to communicate with the Python backend",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "shell:allow-kill",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/loom-backend",
+          "sidecar": true
+        },
+        {
+          "name": "powershell",
+          "cmd": "powershell",
+          "args": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "powershell",
+          "cmd": "powershell",
+          "args": true
+        }
+      ]
+    },
+    "shell:default",
+    "dialog:default",
+    "dialog:allow-message",
+    "dialog:allow-ask",
+    "dialog:allow-open",
+    "fs:default",
+    "fs:allow-write-text-file",
+    "fs:allow-home-write",
+    "fs:allow-desktop-write",
+    "fs:allow-document-write"
+  ]
+}

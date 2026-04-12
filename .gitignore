@@ -1,0 +1,62 @@
+# =============================================================
+#  Loom — .gitignore
+# =============================================================
+
+# ── Compiled / packaged artifacts ────────────────────────────
+website/
+.vscode/
+.agent/
+
+# PyInstaller output (rebuilt by build.bat step 1)
+server/dist/
+server/build/
+
+# Tauri sidecar binary (rebuilt by build.bat step 2)
+client/src-tauri/binaries/*.exe
+
+# Tauri / Rust build artifacts
+client/src-tauri/target/
+client/src-tauri/gen/
+client/src-tauri/resources/git-portable
+
+# React production build (rebuilt by tauri build)
+client/build/
+
+# Large zip archives
+*.zip
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# ── Node / npm ───────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+.npm
+
+# ── Environment & secrets ────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Loom runtime cache (user data, not source) ───────────────
+.loom/
+
+# ── OS junk ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ──────────────────────────────────────────────────────
+.idea/
+*.suo
+*.user
+
+# ── Agent scratch (Antigravity internal) ─────────────────────
+.agent/
