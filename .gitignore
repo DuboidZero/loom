@@ -6,6 +6,7 @@
 website/
 .vscode/
 .agent/
+git workflow.txt
 
 # PyInstaller output (rebuilt by build.bat step 1)
 server/dist/
