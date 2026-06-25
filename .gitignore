@@ -13,7 +13,8 @@ server/dist/
 server/build/
 
 # Tauri sidecar binary (rebuilt by build.bat step 2)
-client/src-tauri/binaries/*.exe
+client/src-tauri/binaries/
+client/src-tauri/binaries/*execle
 
 # Tauri / Rust build artifacts
 client/src-tauri/target/

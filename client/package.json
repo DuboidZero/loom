@@ -31,7 +31,12 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:backend": "node scripts/build-backend.js",
+    "prepare:sidecar": "node scripts/prepare-sidecar.js",
+    "build:tauri": "npx tauri build",
+    "build:windows": "npm run build:backend && npm run prepare:sidecar && npm run build:tauri -- --bundles nsis,msi",
+    "build:linux": "npm run build:backend && npm run prepare:sidecar && npm run build:tauri -- --bundles appimage,deb"
   },
   "eslintConfig": {
     "extends": [
