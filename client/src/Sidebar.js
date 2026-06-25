@@ -13,29 +13,55 @@
 import React, { useState, useMemo, useCallback } from 'react';
 
 // ---------------------------------------------------------------------------
-// Colour palettes — match App.js langMap and typeMap exactly
+// Colour palettes — single source of truth for Sidebar icons.
+// These MUST stay in sync with langMap / typeMap in App.js.
 // ---------------------------------------------------------------------------
 const LANG_COLOURS = {
-  py:    '#c2c2c2',
-  js:    '#f7df1e',
-  jsx:   '#61dafb',
-  ts:    '#007acc',
-  tsx:   '#3178c6',
-  cpp:   '#f34b7d',
-  c:     '#a8b9cc',
-  java:  '#b07219',
-  cs:    '#178600',
-  go:    '#00ADD8',
-  rs:    '#dea584',
-  ipynb: '#cccac8',
+  // ── Web / JS ecosystem ──────────────────────────────────────────────────
+  py:    '#c2c2c2',   // Python   — neutral grey (matches CPython logo)
+  js:    '#f7df1e',   // JS       — official yellow
+  jsx:   '#61dafb',   // React    — official cyan
+  ts:    '#007acc',   // TS       — official blue
+  tsx:   '#3178c6',   // TS-React — slightly darker blue
+  // ── Systems languages ────────────────────────────────────────────────────
+  c:     '#a8b9cc',   // C        — classic blue-grey
+  h:     '#a8b9cc',   // C header — same as C
+  cpp:   '#f34b7d',   // C++      — pink (GitHub linguist)
+  hpp:   '#f34b7d',   // C++ header — same as C++
+  java:  '#b07219',   // Java     — brown-gold (GitHub linguist)
+  cs:    '#178600',   // C#       — green (GitHub linguist)
+  rs:    '#dea584',   // Rust     — peach-orange (GitHub linguist)
+  go:    '#00ADD8',   // Go       — official Go blue
+  // ── JVM / FP ─────────────────────────────────────────────────────────────
+  scala: '#DC322F',   // Scala    — official red
+  kt:    '#7F52FF',   // Kotlin   — official purple
+  kts:   '#7F52FF',   // Kotlin Script
+  // ── Scripting ────────────────────────────────────────────────────────────
+  rb:    '#CC342D',   // Ruby     — official red
+  php:   '#777BB4',   // PHP      — official purple
+  lua:   '#2C7EDE',   // Lua      — bright blue (dark navy is too low-contrast)
+  pl:    '#0298C3',   // Perl     — blue
+  pm:    '#0298C3',   // Perl module
+  r:     '#276DC3',   // R        — official R blue
+  sh:    '#89E051',   // Shell    — green (GitHub linguist)
+  bash:  '#89E051',   // Bash     — same as shell
+  // ── Mobile / modern ──────────────────────────────────────────────────────
+  swift: '#F05138',   // Swift    — official orange-red
+  dart:  '#00B4AB',   // Dart     — official teal
+  // ── Functional / emerging ─────────────────────────────────────────────────
+  ex:    '#6E4A7E',   // Elixir   — official purple
+  exs:   '#6E4A7E',   // Elixir Script
+  zig:   '#F7A41D',   // Zig      — official amber
+  // ── Notebooks ─────────────────────────────────────────────────────────────
+  ipynb: '#F37726',   // Jupyter  — official orange
 };
 
 const TYPE_COLOURS = {
-  function:  '#DCDCAA',  // VSCode soft yellow
+  function:  '#DCDCAA',  // VSCode golden yellow
   class:     '#4EC9B0',  // VSCode teal
-  interface: '#C792EA',  // purple
-  struct:    '#56B6C2',  // cyan
-  module:    '#E5C07B',  // amber
+  interface: '#C792EA',  // soft purple
+  struct:    '#56B6C2',  // steel cyan
+  module:    '#E5C07B',  // warm amber
 };
 
 // ---------------------------------------------------------------------------
@@ -307,7 +333,7 @@ function TreeItem({ item, depth, selectedNodeId, onNodeSelect, search, filterLan
 const ALL_LANGS  = ['py', 'js', 'jsx', 'ts', 'tsx', 'cpp', 'c', 'java', 'cs', 'go', 'rs', 'ipynb'];
 const ALL_TYPES  = ['function', 'class', 'interface', 'struct', 'module'];
 
-export default function Sidebar({ nodes, selectedNodeId, onNodeSelect, workspaceName, collapsed, onToggleCollapse }) {
+export default function Sidebar({ nodes, selectedNodeId, onNodeSelect, workspaceName, collapsed, onToggleCollapse, width }) {
   const [search, setSearch] = useState('');
   const [showFilter, setShowFilter] = useState(false);
   const [filterLangs, setFilterLangs] = useState(new Set());
@@ -345,7 +371,7 @@ export default function Sidebar({ nodes, selectedNodeId, onNodeSelect, workspace
   }
 
   return (
-    <div className="sidebar">
+    <div className="sidebar" style={width ? { width, minWidth: width, maxWidth: width, position: 'relative' } : { position: 'relative' }}>
       {/* Header row: EXPLORER title + collapse button */}
       <div className="sidebar-explorer-header">
         <span className="sidebar-explorer-title">EXPLORER</span>

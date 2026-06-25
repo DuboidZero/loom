@@ -1,4 +1,5 @@
-import os, re, ast, json, shutil, requests, nbformat, stat, time, sys, subprocess, hashlib, asyncio
+import os, re, ast, json, shutil, requests, nbformat, stat, time, sys, subprocess, hashlib
+from collections import defaultdict, deque
 import ahocorasick
 from datetime import datetime, timezone
 import git 
@@ -16,7 +17,7 @@ from multiprocessing import Pool, cpu_count
 # on subsequent launches instead of re-scanning from scratch every time.
 # ---------------------------------------------------------------------------
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".loom", "graph_cache")
-CACHE_VERSION = 2  # Bump this when the cache schema changes
+CACHE_VERSION = 2  
 
 def _get_cache_path(repo_path: str) -> str:
     """Returns the unique cache file path for a given repo."""
@@ -124,23 +125,121 @@ if not OLLAMA_BASE.startswith("http"):
     OLLAMA_BASE = f"http://{OLLAMA_BASE}"
 
 OLLAMA_URL = f"{OLLAMA_BASE}/api/chat"
-MODEL = "gemma4:e2b"
+MODEL = "qwen2.5-coder:7b"
 
-# Directories to ignore during scanning
+# Directories to ignore during scanning (static baseline)
 IGNORE_DIRS = {
-    "node_modules", ".git", "git-portable", "__pycache__", "venv",
-    "dist", "build", ".next", "target",
-    ".venv", "env", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    ".turbo", ".cache", "coverage", "out",
+    "node_modules", ".git", "git-portable", "__pycache__",
+    "venv", ".venv", "env", ".env",
+    "dist", "build", ".next", "target", "out",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".turbo", ".cache", "coverage",
     ".gradle", "bin", "classes",
     "vendor", ".vs", "Debug", "Release", "x64", "x86", "ARM",
-    ".idea", ".vscode"
+    ".idea", ".vscode", "gen",
+    "__pypackages__", ".eggs",
+    # Note: *.egg-info directories are caught by the d.endswith('.egg-info') check in _collect_files
 }
 
 IGNORE_FILES = {
     "jquery.js", "jquery.min.js", "jquery.min.map",
     "bootstrap.js", "bootstrap.min.js", "bootstrap.min.map"
 }
+
+
+def _is_venv_dir(dir_path: str) -> bool:
+    """
+    Returns True if `dir_path` is a Python virtual environment.
+    Detects by the presence of pyvenv.cfg, which every venv contains
+    regardless of the directory name (handles loom-venv, .env, myenv, etc).
+    """
+    return os.path.isfile(os.path.join(dir_path, "pyvenv.cfg"))
+
+
+def _load_gitignore_dirs(repo_path: str) -> set:
+    """
+    Parses the .gitignore at `repo_path` and returns a set of bare directory
+    names to skip.  Only handles simple bare names and trailing-slash patterns
+    (e.g. `loom-venv/`, `*.egg-info` is skipped as it uses a glob).
+    Full gitignore glob semantics are intentionally not implemented here —
+    IGNORE_DIRS covers the complex cases.
+    """
+    gitignore_path = os.path.join(repo_path, ".gitignore")
+    extra = set()
+    if not os.path.isfile(gitignore_path):
+        return extra
+    try:
+        with open(gitignore_path, "r", encoding="utf-8", errors="ignore") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                # Skip comments, empty lines, negations, and file globs
+                if not line or line.startswith("#") or line.startswith("!"):
+                    continue
+                # Strip leading slash (repo-root-relative paths like /dist)
+                line = line.lstrip("/")
+                # Strip trailing slash (gitignore convention for dirs)
+                name = line.rstrip("/")
+                # Only accept plain names with no remaining path separators or
+                # glob characters — those need full gitignore semantics
+                if name and "/" not in name and "*" not in name and "?" not in name:
+                    extra.add(name)
+    except Exception:
+        pass
+    return extra
+
+
+# Shared valid extensions (single source of truth — all lowercase, matched after .lower())
+VALID_EXTS = frozenset({
+    # Original languages
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".ipynb",
+    ".c", ".cpp", ".h", ".hpp",
+    ".java", ".cs", ".go", ".rs",
+    # Extended language support
+    ".rb",                  # Ruby
+    ".php",                 # PHP
+    ".swift",               # Swift
+    ".kt", ".kts",          # Kotlin
+    ".dart",                # Dart
+    ".ex", ".exs",          # Elixir
+    ".lua",                 # Lua
+    ".zig",                 # Zig
+    ".scala",               # Scala
+    ".sh", ".bash",         # Bash / Shell
+    ".r",                   # R (files ending in .R are also caught via .lower())
+    ".pl", ".pm",           # Perl
+})
+
+
+def _collect_files(repo_path: str) -> list:
+    """
+    Walks `repo_path` and returns a list of (abs_file_path, repo_path) tuples
+    for every source file that should be analysed.
+
+    Three-layer ignore system (in order):
+      1. IGNORE_DIRS static set
+      2. .gitignore bare directory names from the repo root
+      3. pyvenv.cfg detection — skips any Python venv regardless of its name
+    """
+    gitignore_dirs = _load_gitignore_dirs(repo_path)
+    combined_ignore = IGNORE_DIRS | gitignore_dirs
+
+    file_paths = []
+    for root, dirs, files in os.walk(repo_path):
+        # Prune dirs in-place so os.walk doesn't descend into them
+        dirs[:] = [
+            d for d in dirs
+            if d not in combined_ignore
+            and not d.startswith(".")
+            and not d.endswith(".egg-info")   # covers mypackage.egg-info etc.
+            and not _is_venv_dir(os.path.join(root, d))
+        ]
+        for file in files:
+            if file in IGNORE_FILES:
+                continue
+            # Case-insensitive extension check via O(1) set lookup
+            if os.path.splitext(file)[1].lower() in VALID_EXTS:
+                file_paths.append((os.path.join(root, file), repo_path))
+    return file_paths
 
 
 class ConfigUpdate(BaseModel):
@@ -159,38 +258,31 @@ async def update_config(conf: ConfigUpdate) -> dict:
         git.refresh()
     return {"status": "Config updated in backend."}
 
-@app.delete("/clear-cache")
-async def clear_cache() -> dict:
-    """Deletes all cached graph JSON files from CACHE_DIR."""
-    try:
-        if not os.path.exists(CACHE_DIR):
-            return {"status": "ok", "deleted": 0}
-        deleted = 0
-        for fname in os.listdir(CACHE_DIR):
-            if fname.endswith(".json"):
-                os.remove(os.path.join(CACHE_DIR, fname))
-                deleted += 1
-        print(f"Loom: Cleared {deleted} cache file(s) from {CACHE_DIR}")
-        return {"status": "ok", "deleted": deleted}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
-def setup_git_env():
-    """Configures the git executable, preferring a bundled portable version if available."""
-    base_path = os.path.dirname(sys.executable)
-    portable_git = os.path.join(base_path, "resources", "git-portable", "bin", "git.exe")
-
-    if os.path.exists(portable_git):
-        os.environ["GIT_PYTHON_GIT_EXECUTABLE"] = portable_git
-        print(f"Loom: Using bundled Git at {portable_git}")
-    else:
-        print("Loom: Bundled Git not found, falling back to system PATH.")
-
+def setup_git_env() -> None:
+    """
+    Configures the git executable.  Only attempts bundled-git lookup on Windows
+    (the `git.exe` path is meaningless on Linux/macOS).
+    """
+    if sys.platform == "win32":
+        base_path = os.path.dirname(sys.executable)
+        portable_git = os.path.join(base_path, "resources", "git-portable", "bin", "git.exe")
+        if os.path.exists(portable_git):
+            os.environ["GIT_PYTHON_GIT_EXECUTABLE"] = portable_git
+            print(f"Loom: Using bundled Git at {portable_git}")
+        else:
+            print("Loom: Bundled Git not found, falling back to system PATH.")
     git.refresh()
 
 setup_git_env()
 
 TEMP_REPO_DIR = os.path.join(tempfile.gettempdir(), "loom_analysis_cache")
+# Wipe any leftover GitHub clone from a previous session on startup
+try:
+    if os.path.isdir(TEMP_REPO_DIR):
+        shutil.rmtree(TEMP_REPO_DIR, ignore_errors=True)
+except Exception:
+    pass
 
 # --- Global Graph State ---
 global_symbols = {}       # Map of symbol name -> node ID
@@ -202,34 +294,226 @@ scc_members = {}          # Map of scc_id -> [node_ids] (only for SCCs with >1 m
 current_repo_path = ""    # Currently scanned repository path
 all_links = []            # All links in the graph for export
 
-COMPILED_PATTERNS = {
+# Fast node lookup — rebuilt once per scan via _rebuild_nodes_by_id().
+# Eliminates the O(n) per-click dict comprehension that was previously
+# reconstructed inside build_contextual_prompt, build_reverse_call_flow, etc.
+_nodes_by_id: dict = {}
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (shared across endpoints)
+# ---------------------------------------------------------------------------
+
+def _is_ollama_alive() -> bool:
+    """Returns True if the Ollama HTTP server is reachable."""
+    try:
+        r = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _rebuild_nodes_by_id() -> None:
+    """Rebuilds the global _nodes_by_id lookup dict after a scan completes."""
+    global _nodes_by_id
+    _nodes_by_id = {n['id']: n for n in all_nodes}
+
+
+def _build_adjacency_lists(links: list) -> tuple:
+    """
+    Builds forward and reverse call adjacency dicts from a flat link list.
+    Uses sets internally for O(1) uniqueness, returns lists for JSON compatibility.
+    """
+    fwd: dict = defaultdict(set)
+    rev: dict = defaultdict(set)
+    for lnk in links:
+        if lnk.get('type') == 'call':
+            src, tgt = lnk['source'], lnk['target']
+            fwd[src].add(tgt)
+            rev[tgt].add(src)
+    return (
+        {k: list(v) for k, v in fwd.items()},
+        {k: list(v) for k, v in rev.items()},
+    )
+
+# Maps a pattern's `type_label` key to the canonical node type stored in the graph.
+_TYPE_LABEL_MAP: dict[str, str] = {
+    "function":  "function",
+    "arrow":     "function",  # JS/TS arrow / expression functions
+    "method":    "function",
+    "class":     "class",
+    "interface": "interface",
+    "struct":    "struct",
+    "module":    "module",
+}
+
+# Languages whose blocks are terminated with `end` instead of `}`.
+_END_BLOCK_LANGS: frozenset = frozenset({"ruby", "elixir", "lua"})
+
+COMPILED_PATTERNS: dict = {
+    # -------------------------------------------------------------------------
+    # JavaScript / TypeScript
+    # Captures: named `function` declarations AND `const/let/var name = ... =>`
+    # -------------------------------------------------------------------------
     "js_ts": {
-        "function": re.compile(r'(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\('),
-        "class": re.compile(r'(?:export\s+)?class\s+([a-zA-Z0-9_]+)'),
-        "interface": re.compile(r'interface\s+([a-zA-Z0-9_]+)\s*{'),
-        "struct": re.compile(r'type\s+([a-zA-Z0-9_]+)\s*=\s*{')
+        "function": re.compile(
+            r'(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\('
+        ),
+        "arrow": re.compile(
+            r'(?:export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)'
+            r'\s*=\s*(?:async\s*)?(?:\([^)]{0,300}\)|[a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>'
+        ),
+        "class":     re.compile(r'(?:export\s+(?:default\s+)?)?class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)'),
+        "interface": re.compile(r'interface\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:extends\b[^{]*)?\{'),
+        "struct":    re.compile(r'type\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\{'),
     },
+    # -------------------------------------------------------------------------
+    # C / C++
+    # -------------------------------------------------------------------------
     "cpp_c": {
-        "function": re.compile(r'(?:[\w:<>]+\s+)+(?:\*|&)?\s*([a-zA-Z_][\w:]*)\s*\([^)]*\)\s*{'),
-        "class": re.compile(r'class\s+([a-zA-Z0-9_]+)'),
-        "struct": re.compile(r'struct\s+([a-zA-Z0-9_]+)\s*{'),
-        "module": re.compile(r'namespace\s+([a-zA-Z0-9_]+)\s*{')
+        "function": re.compile(
+            r'(?:[\w:<>]+\s+)+(?:\*|&)?\s*([a-zA-Z_][\w:]*)\s*\([^)]*\)\s*\{'
+        ),
+        "class":  re.compile(r'class\s+([a-zA-Z0-9_]+)'),
+        "struct": re.compile(r'struct\s+([a-zA-Z0-9_]+)\s*\{'),
+        "module": re.compile(r'namespace\s+([a-zA-Z0-9_]+)\s*\{'),
     },
+    # -------------------------------------------------------------------------
+    # Java / C#
+    # -------------------------------------------------------------------------
     "java_cs": {
-        "function": re.compile(r'[\w<>]+\s+([a-zA-Z_][\w]*)\s*\([^)]*\)\s*{'),
-        "class": re.compile(r'class\s+([a-zA-Z0-9_]+)'),
-        "interface": re.compile(r'interface\s+([a-zA-Z0-9_]+)\s*{')
+        "function":  re.compile(r'[\w<>]+\s+([a-zA-Z_][\w]*)\s*\([^)]*\)\s*\{'),
+        "class":     re.compile(r'(?:abstract\s+|final\s+)?class\s+([a-zA-Z0-9_]+)'),
+        "interface": re.compile(r'interface\s+([a-zA-Z0-9_]+)\s*\{'),
     },
+    # -------------------------------------------------------------------------
+    # Go — also captures method receivers: func (r *Receiver) Name(
+    # -------------------------------------------------------------------------
     "go": {
-        "function": re.compile(r'func\s+([a-zA-Z0-9_]+)\s*\('),
+        "function":  re.compile(r'func\s+(?:\([^)]*\)\s+)?([a-zA-Z0-9_]+)\s*\('),
         "interface": re.compile(r'type\s+([a-zA-Z0-9_]+)\s+interface'),
-        "struct": re.compile(r'type\s+([a-zA-Z0-9_]+)\s+struct')
+        "struct":    re.compile(r'type\s+([a-zA-Z0-9_]+)\s+struct'),
     },
+    # -------------------------------------------------------------------------
+    # Rust
+    # -------------------------------------------------------------------------
     "rust": {
-        "function": re.compile(r'fn\s+([a-zA-Z0-9_]+)'),
+        "function":  re.compile(r'(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)'),
         "interface": re.compile(r'trait\s+([a-zA-Z0-9_]+)'),
-        "class": re.compile(r'(?:struct|enum)\s+([a-zA-Z0-9_]+)'),
-        "module": re.compile(r'mod\s+([a-zA-Z0-9_]+)')
+        "class":     re.compile(r'(?:struct|enum)\s+([a-zA-Z0-9_]+)'),
+        "module":    re.compile(r'mod\s+([a-zA-Z0-9_]+)'),
+    },
+    # -------------------------------------------------------------------------
+    # Ruby
+    # -------------------------------------------------------------------------
+    "ruby": {
+        "function": re.compile(r'def\s+(?:self\.)?([a-zA-Z_][a-zA-Z0-9_?!]*)'),
+        "class":    re.compile(r'class\s+([A-Z][a-zA-Z0-9_:]*)'),
+        "module":   re.compile(r'module\s+([A-Z][a-zA-Z0-9_:]*)'),
+    },
+    # -------------------------------------------------------------------------
+    # PHP
+    # -------------------------------------------------------------------------
+    "php": {
+        "function":  re.compile(
+            r'(?:(?:public|private|protected|static|abstract|final)\s+)*'
+            r'function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+        ),
+        "class":     re.compile(r'(?:abstract\s+|final\s+)?class\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+        "interface": re.compile(r'interface\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+        "struct":    re.compile(r'trait\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+    },
+    # -------------------------------------------------------------------------
+    # Swift
+    # -------------------------------------------------------------------------
+    "swift": {
+        "function": re.compile(
+            r'(?:(?:public|private|internal|open|fileprivate|static|class|mutating|override|final)\s+)*'
+            r'func\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:<[^>]*>)?\s*\('
+        ),
+        "class":     re.compile(r'(?:final\s+)?class\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+        "struct":    re.compile(r'struct\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+        "interface": re.compile(r'protocol\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+        "module":    re.compile(r'extension\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+    },
+    # -------------------------------------------------------------------------
+    # Kotlin
+    # -------------------------------------------------------------------------
+    "kotlin": {
+        "function": re.compile(
+            r'(?:(?:public|private|protected|internal|suspend|inline|operator|override|open)\s+)*'
+            r'fun\s+(?:<[^>]*>\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+        ),
+        "class": re.compile(
+            r'(?:data\s+|sealed\s+|abstract\s+|open\s+|enum\s+)?class\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        ),
+        "interface": re.compile(r'interface\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+        "module":    re.compile(r'object\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+    },
+    # -------------------------------------------------------------------------
+    # Dart
+    # -------------------------------------------------------------------------
+    "dart": {
+        "function": re.compile(
+            r'(?:static\s+)?(?:Future<[^>]+>|Stream<[^>]+>|void|bool|int|double|String'
+            r'|List|Map|[A-Z][a-zA-Z0-9_<>?,\s]*)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:<[^>]*>)?\s*\('
+        ),
+        "class":     re.compile(r'(?:abstract\s+)?class\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+        "interface": re.compile(r'mixin\s+([a-zA-Z_][a-zA-Z0-9_]*)'),
+    },
+    # -------------------------------------------------------------------------
+    # Elixir — defp (private) treated same as def
+    # -------------------------------------------------------------------------
+    "elixir": {
+        "function":  re.compile(r'defp?\s+([a-zA-Z_][a-zA-Z0-9_?!]*)\s*\('),
+        "module":    re.compile(r'defmodule\s+([A-Z][a-zA-Z0-9_.]*)\s+do'),
+        "interface": re.compile(r'defprotocol\s+([A-Z][a-zA-Z0-9_.]*)\s+do'),
+    },
+    # -------------------------------------------------------------------------
+    # Lua
+    # -------------------------------------------------------------------------
+    "lua": {
+        "function": re.compile(r'(?:local\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s*\('),
+        "arrow":    re.compile(r'([a-zA-Z_][a-zA-Z0-9_.]*)\s*=\s*function\s*\('),
+    },
+    # -------------------------------------------------------------------------
+    # Zig
+    # -------------------------------------------------------------------------
+    "zig": {
+        "function": re.compile(r'(?:pub\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\('),
+        "struct":   re.compile(r'const\s+([A-Z][a-zA-Z0-9_]*)\s*=\s*(?:struct|union|enum)\s*\{'),
+    },
+    # -------------------------------------------------------------------------
+    # Scala
+    # -------------------------------------------------------------------------
+    "scala": {
+        "function":  re.compile(r'def\s+([a-zA-Z_][a-zA-Z0-9_$`]*)\s*(?:\[[^\]]*\])?\s*(?:\(|:)'),
+        "class":     re.compile(
+            r'(?:case\s+|abstract\s+|sealed\s+|final\s+)?class\s+([a-zA-Z_][a-zA-Z0-9_$]*)'
+        ),
+        "module":    re.compile(r'object\s+([a-zA-Z_][a-zA-Z0-9_$]*)'),
+        "interface": re.compile(r'trait\s+([a-zA-Z_][a-zA-Z0-9_$]*)'),
+    },
+    # -------------------------------------------------------------------------
+    # Bash / Shell
+    # -------------------------------------------------------------------------
+    "bash": {
+        "function": re.compile(
+            r'(?:function\s+)?([a-zA-Z_][a-zA-Z0-9_-]*)\s*\(\s*\)\s*\{'
+        ),
+    },
+    # -------------------------------------------------------------------------
+    # R
+    # -------------------------------------------------------------------------
+    "r": {
+        "function": re.compile(r'([a-zA-Z_.][a-zA-Z0-9_.]*)\s*(?:<-|=)\s*function\s*\('),
+    },
+    # -------------------------------------------------------------------------
+    # Perl
+    # -------------------------------------------------------------------------
+    "perl": {
+        "function": re.compile(r'sub\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\{|\()'),
+        "class":    re.compile(r'package\s+([a-zA-Z_][a-zA-Z0-9_:]*)\s*;'),
     },
 }
 
@@ -250,132 +534,270 @@ class ForwardCallFlowRequest(BaseModel):
     maxDepth: int = 2
     maxNodes: int = 25 
 
-def force_rmtree(path):
+def force_rmtree(path: str) -> None:
     """
     Removes a directory tree, handling read-only files (common on Windows).
+    Uses `onexc` (Python 3.12+) when available, falls back to `onerror`.
     """
-    def on_rm_error(func, path, exc_info):
+    def _handle_error(func, path, exc_info):
         os.chmod(path, stat.S_IWRITE)
         func(path)
     if os.path.exists(path):
-        shutil.rmtree(path, onerror=on_rm_error)
+        try:
+            shutil.rmtree(path, onexc=_handle_error)   # Python 3.12+
+        except TypeError:
+            shutil.rmtree(path, onerror=_handle_error)  # Python <3.12
 
 def extract_code_block(source, start_index):
     """
-    Extracts a balanced curly-brace code block starting from a given index.
-    
-    Args:
-        source (str): The full source code string.
-        start_index (int): The index of the opening brace (or just before it).
-        
-    Returns:
-        str: The extracted code block inclusive of braces.
-    """
-    brace_count = 0
-    found_first = False
-    end_index = start_index
-    for i in range(start_index, len(source)):
-        char = source[i]
-        if char == '{':
-            brace_count += 1
-            found_first = True
-        elif char == '}':
-            brace_count -= 1
-        if found_first and brace_count == 0:
-            end_index = i + 1
-            break
-    return source[start_index:end_index]
+    Extracts a balanced curly-brace code block (function/class body) starting
+    from start_index.
 
-def parse_regex_structure(source, rel_path, file_id, lang_key):
+    The key improvement over a naive first-brace scan: JS/TS functions can have
+    destructured parameters like  `function foo({ a, b }) { ... }`.  A naive
+    scan would treat the `{` inside the parameter list as the body opener and
+    stop at the matching `}`, returning only the signature.
+
+    Strategy:
+      1. If a `(` exists between start_index and the first `{`, walk forward
+         with paren-depth counting to find the matching `)`.  The body `{`
+         must come after that `)`.
+      2. Scan up to 80 chars after `)` (or from start_index when no parens)
+         for the first `{` — this is the body opener.
+      3. Count balanced braces from that opener to find the body end.
     """
-    Parses source code using regex patterns for languages where AST is not available.
-    Supports extracton of function, class, interface, struct, and module definitions.
+    n = len(source)
+
+    # --- Step 1: find the first '(' before the first '{' (params list) -------
+    first_open_paren = -1
+    first_open_brace = -1
+    for j in range(start_index, min(start_index + 300, n)):
+        c = source[j]
+        if c == '(' and first_open_paren == -1:
+            first_open_paren = j
+        if c == '{':
+            first_open_brace = j
+            break
+
+    # If parens come before the brace, skip the entire param list first
+    scan_from = start_index
+    if first_open_paren != -1 and (first_open_brace == -1 or first_open_paren < first_open_brace):
+        paren_depth = 0
+        close_paren_pos = first_open_paren
+        for j in range(first_open_paren, n):
+            c = source[j]
+            if c == '(':
+                paren_depth += 1
+            elif c == ')':
+                paren_depth -= 1
+                if paren_depth == 0:
+                    close_paren_pos = j
+                    break
+        scan_from = close_paren_pos + 1
+
+    # --- Step 2: find the body opening '{' after the param list --------------
+    body_start = -1
+    for j in range(scan_from, min(scan_from + 80, n)):
+        c = source[j]
+        if c == '{':
+            body_start = j
+            break
+        # Arrow function or declaration with no body
+        if c == ';':
+            break
+
+    if body_start == -1:
+        # No body brace found — return the signature only
+        return source[start_index:scan_from]
+
+    # --- Step 3: balanced brace extraction from body_start -------------------
+    brace_count = 0
+    for k in range(body_start, n):
+        c = source[k]
+        if c == '{':
+            brace_count += 1
+        elif c == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                return source[start_index:k + 1]
+
+    # Fallback: return up to what we found
+    return source[start_index:body_start]
+
+def extract_end_block(source: str, start_index: int) -> str:
     """
-    nodes, links = [], []
-    found_symbols = {}
+    Extracts a code block terminated by the `end` keyword (Ruby, Elixir, Lua).
+    Tracks nesting depth by counting block-opening keywords versus `end` lines.
+    Falls back to the first 60 lines if the block is pathologically large.
+    """
+    _OPEN_KW = frozenset({
+        'def', 'defp', 'class', 'module', 'do', 'if', 'unless',
+        'while', 'until', 'for', 'begin', 'case', 'function',
+        'defmodule', 'defprotocol',
+    })
+    MAX_LINES = 200
+    lines_collected = []
+    depth = 1
+    i = source.find('\n', start_index)
+    if i == -1:
+        return source[start_index:]
+    lines_collected.append(source[start_index:i])
+    i += 1
+    n = len(source)
+    while i < n and depth > 0 and len(lines_collected) < MAX_LINES:
+        line_end = source.find('\n', i)
+        if line_end == -1:
+            line_end = n
+        line = source[i:line_end]
+        lines_collected.append(line)
+        tok = line.strip().split()
+        if tok:
+            first = tok[0]
+            if first in _OPEN_KW:
+                depth += 1
+            elif first == 'end':
+                depth -= 1
+        i = line_end + 1
+    return '\n'.join(lines_collected)
+
+
+def parse_regex_structure(source: str, rel_path: str, file_id: str, lang_key: str) -> tuple:
+    """
+    Parses source code using compiled regex patterns.
+    Handles any language in COMPILED_PATTERNS.
+
+    Key improvements over the previous version:
+    - Uses _TYPE_LABEL_MAP so 'interface', 'struct', 'module' get correct types
+      instead of blindly falling through to 'function'.
+    - Picks the first non-None capture group, supporting patterns with
+      alternation (e.g. bash: `func name()` vs `name()`).
+    - Deduplicates nodes by nid to prevent double-entries from overlapping
+      patterns (e.g. arrow + function both matching the same identifier).
+    - Dispatches to extract_end_block for end-keyword languages (Ruby/Elixir/Lua)
+      and extract_code_block for brace-delimited languages.
+    """
+    nodes: list = []
+    links: list = []
+    found_symbols: dict = {}
+    seen_nids: set = set()
     rules = COMPILED_PATTERNS.get(lang_key, {})
+    extractor = extract_end_block if lang_key in _END_BLOCK_LANGS else extract_code_block
+
+    _KEYWORD_SKIP = frozenset({
+        'if', 'for', 'while', 'return', 'switch', 'template',
+        'public', 'private', 'protected', 'static', 'void',
+        'new', 'delete', 'throw', 'catch', 'try', 'import',
+        'export', 'from', 'const', 'let', 'var',
+    })
+
     for type_label, compiled_pattern in rules.items():
+        node_type = _TYPE_LABEL_MAP.get(type_label, 'function')
         for match in compiled_pattern.finditer(source):
-            name = match.group(1)
-            # Skip common keywords that might be matched erroneously
-            if name in ["if", "for", "while", "return", "switch", "template", "public", "private", "protected"]: continue
-            
-            node_type = "class" if "class" in type_label else "function"
+            # Support patterns with multiple capture groups (pick first non-None)
+            name = next((g for g in match.groups() if g is not None), None)
+            if not name or name in _KEYWORD_SKIP:
+                continue
             nid = f"{node_type}:{rel_path}:{name}"
+            if nid in seen_nids:
+                continue
+            seen_nids.add(nid)
             found_symbols[name] = nid
             nodes.append({
-                "id": nid, 
-                "label": f"{name}()" if node_type == "function" else name, 
-                "type": node_type, 
-                "code": extract_code_block(source, match.start())
+                'id': nid,
+                'label': f'{name}()' if node_type == 'function' else name,
+                'type': node_type,
+                'code': extractor(source, match.start()),
             })
-            links.append({"source": file_id, "target": nid})
+            links.append({'source': file_id, 'target': nid})
     return nodes, links, found_symbols
 
-def parse_file_structure(file_path, base_path):
+def parse_file_structure(file_path: str, base_path: str) -> tuple:
     """
-    Parses a single file to extract its code structure (nodes) and structure links.
-    Uses Python AST for .py files, and regex fallback for others.
-    
-    Args:
-        file_path (str): Absolute path to the file.
-        base_path (str): Root directory of the repository.
-        
-    Returns:
-        tuple: (nodes list, links list, found_symbols dict)
+    Parses a single file to extract its code structure (nodes) and links.
+    - Python / Jupyter: full AST parse (exact line ranges, decorator info).
+    - All other supported languages: regex-based via parse_regex_structure.
     """
     nodes, links = [], []
-    found_symbols = {}
-    rel_path = os.path.relpath(file_path, base_path).replace("\\", "/")
-    file_id = f"file:{rel_path}"
-    nodes.append({"id": file_id, "label": os.path.basename(rel_path), "type": "file", "path": rel_path})
-    
+    found_symbols: dict = {}
+    rel_path = os.path.relpath(file_path, base_path).replace('\\', '/')
+    file_id = f'file:{rel_path}'
+    nodes.append({'id': file_id, 'label': os.path.basename(rel_path), 'type': 'file', 'path': rel_path})
+
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            source = f.read() if not file_path.endswith(".ipynb") else "\n".join([c['source'] for c in nbformat.read(f, as_version=4).cells if c.cell_type == 'code'])
-    except: return nodes, links, found_symbols
-    
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            if file_path.endswith('.ipynb'):
+                source = '\n'.join(
+                    c['source'] for c in nbformat.read(f, as_version=4).cells
+                    if c.cell_type == 'code'
+                )
+            else:
+                source = f.read()
+    except Exception:
+        return nodes, links, found_symbols
+
     ext = os.path.splitext(file_path)[1].lower()
-    if ext in [".py", ".ipynb"]:
+
+    def _regex(lang_key: str) -> None:
+        n, l, s = parse_regex_structure(source, rel_path, file_id, lang_key)
+        nodes.extend(n); links.extend(l); found_symbols.update(s)
+
+    if ext in ('.py', '.ipynb'):
         try:
             tree = ast.parse(source)
             lines = source.splitlines()
             for item in ast.walk(tree):
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    itype = "function" if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class"
-                    decorator_info = ""
+                    itype = 'function' if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) else 'class'
+                    decorator_info = ''
                     if hasattr(item, 'decorator_list') and item.decorator_list:
                         for dec in item.decorator_list:
                             if isinstance(dec, ast.Call) and hasattr(dec.func, 'attr'):
-                                decorator_info = f"[@{dec.func.attr}] "
-                    
-                    display_name = f"{decorator_info}{item.name}"
-                    nid = f"{itype}:{rel_path}:{item.name}"
-                
+                                decorator_info = f'[@{dec.func.attr}] '
+                    display_name = f'{decorator_info}{item.name}'
+                    nid = f'{itype}:{rel_path}:{item.name}'
                     found_symbols[item.name] = nid
                     nodes.append({
-                        "id": nid, 
-                        "label": display_name, 
-                        "type": itype, 
-                        "code": "\n".join(lines[item.lineno-1 : item.end_lineno])
+                        'id': nid, 'label': display_name, 'type': itype,
+                        'code': '\n'.join(lines[item.lineno - 1: item.end_lineno])
                     })
-                    links.append({"source": file_id, "target": nid})
-        except: pass
-    elif ext in [".js", ".jsx", ".ts", ".tsx"]:
-        n, l, s = parse_regex_structure(source, rel_path, file_id, "js_ts")
-        nodes.extend(n); links.extend(l); found_symbols.update(s)
-    elif ext in [".c", ".cpp", ".h", ".hpp"]:
-        n, l, s = parse_regex_structure(source, rel_path, file_id, "cpp_c")
-        nodes.extend(n); links.extend(l); found_symbols.update(s)
-    elif ext in [".java", ".cs"]:
-        n, l, s = parse_regex_structure(source, rel_path, file_id, "java_cs")
-        nodes.extend(n); links.extend(l); found_symbols.update(s)
-    elif ext == ".go":
-        n, l, s = parse_regex_structure(source, rel_path, file_id, "go")
-        nodes.extend(n); links.extend(l); found_symbols.update(s)
-    elif ext == ".rs":
-        n, l, s = parse_regex_structure(source, rel_path, file_id, "rust")
-        nodes.extend(n); links.extend(l); found_symbols.update(s)
+                    links.append({'source': file_id, 'target': nid})
+        except Exception:
+            pass
+    # --- JavaScript / TypeScript ---
+    elif ext in ('.js', '.jsx', '.ts', '.tsx'):  _regex('js_ts')
+    # --- C / C++ ---
+    elif ext in ('.c', '.cpp', '.h', '.hpp'):    _regex('cpp_c')
+    # --- Java / C# ---
+    elif ext in ('.java', '.cs'):                _regex('java_cs')
+    # --- Go ---
+    elif ext == '.go':                           _regex('go')
+    # --- Rust ---
+    elif ext == '.rs':                           _regex('rust')
+    # --- Ruby ---
+    elif ext == '.rb':                           _regex('ruby')
+    # --- PHP ---
+    elif ext == '.php':                          _regex('php')
+    # --- Swift ---
+    elif ext == '.swift':                        _regex('swift')
+    # --- Kotlin ---
+    elif ext in ('.kt', '.kts'):                 _regex('kotlin')
+    # --- Dart ---
+    elif ext == '.dart':                         _regex('dart')
+    # --- Elixir ---
+    elif ext in ('.ex', '.exs'):                 _regex('elixir')
+    # --- Lua ---
+    elif ext == '.lua':                          _regex('lua')
+    # --- Zig ---
+    elif ext == '.zig':                          _regex('zig')
+    # --- Scala ---
+    elif ext == '.scala':                        _regex('scala')
+    # --- Bash / Shell ---
+    elif ext in ('.sh', '.bash'):                _regex('bash')
+    # --- R ---
+    elif ext == '.r':                            _regex('r')
+    # --- Perl ---
+    elif ext in ('.pl', '.pm'):                  _regex('perl')
+
     return nodes, links, found_symbols
 
 def process_file_wrapper(args):
@@ -393,7 +815,7 @@ async def map_repo(path: str):
     3. Resolves cross-file references to build call edges.
     4. Detects Strongly Connected Components (SCCs) to handle cycles.
     """
-    global global_symbols, call_graph, reverse_call_graph, all_nodes, current_repo_path, all_links
+    global global_symbols, call_graph, reverse_call_graph, all_nodes, current_repo_path, all_links, scc_map, scc_members
     global_symbols = {} 
     call_graph = {}
     reverse_call_graph = {}
@@ -402,17 +824,7 @@ async def map_repo(path: str):
     clean_path = path.replace("\\", "/")
     current_repo_path = clean_path
     local_all_nodes.append({"id": "repo-root", "label": "ROOT", "type": "root"})
-    VALID_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".ipynb", ".c", ".cpp", ".h", ".hpp", ".java", ".cs", ".go", ".rs"}
-    
-    file_paths = []
-    for root, dirs, files in os.walk(clean_path):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
-        for file in files:
-            if file in IGNORE_FILES:
-                continue
-
-            if any(file.endswith(ext) for ext in VALID_EXTS):
-                file_paths.append((os.path.join(root, file), clean_path))
+    file_paths = _collect_files(clean_path)
     
     # -----------------------------------------------------------------------
     # Cache check — skip full scan if nothing has changed on disk
@@ -421,7 +833,12 @@ async def map_repo(path: str):
     cached = _try_load_cache(clean_path, fingerprint)
     if cached:
         print(f"Loom: Cache HIT for {clean_path} ({len(file_paths)} files)")
-        # Restore all global state from cache
+        # Reset globals before restoring from cache to avoid stale state
+        global_symbols = {}
+        call_graph = {}
+        reverse_call_graph = {}
+        scc_map.clear()
+        scc_members.clear()
         all_nodes = cached["nodes"]
         all_links = cached["links"]
         call_graph.update(cached["call_graph"])
@@ -435,6 +852,7 @@ async def map_repo(path: str):
             if node.get("type") in ("function", "class", "interface", "struct", "module"):
                 name = node["label"].replace("()", "").split("] ")[-1]
                 global_symbols[name] = node["id"]
+        _rebuild_nodes_by_id()
         lean_cached = [{k: v for k, v in n.items() if k != "code"} for n in all_nodes]
         return {"nodes": lean_cached, "links": all_links}
 
@@ -465,22 +883,12 @@ async def map_repo(path: str):
             for target_id in _find_calls_ac(node["code"], current_name, automaton):
                 all_links.append({"source": node["id"], "target": target_id, "type": "call"})
 
-    # Build forward and reverse adjacency lists
-    for link in all_links:
-        if link.get('type') == 'call':
-            source = link['source']
-            target = link['target']
-            if source not in call_graph:
-                call_graph[source] = []
-            if target not in call_graph[source]:
-                call_graph[source].append(target)
-            if target not in reverse_call_graph:
-                reverse_call_graph[target] = []
-            if source not in reverse_call_graph[target]:
-                reverse_call_graph[target].append(source)
+    # Build forward and reverse adjacency lists (O(n), deduped via sets)
+    call_graph, reverse_call_graph = _build_adjacency_lists(all_links)
 
     all_nodes = local_all_nodes
-    detect_sccs()
+    scc_map, scc_members = detect_sccs(call_graph)
+    _rebuild_nodes_by_id()
 
     # -----------------------------------------------------------------------
     # Save to disk cache for next launch
@@ -510,18 +918,18 @@ async def map_repo(path: str):
     return {"nodes": lean_nodes, "links": struct_links + call_links}
 
 
-def detect_sccs():
+def detect_sccs(cg: dict) -> tuple:
     """
     Detects strongly connected components (cycles) using Tarjan's algorithm.
-    Populates global `scc_map` and `scc_members`.
+    Returns (scc_map, scc_members) instead of mutating globals directly,
+    making it testable and safe to call from multiple contexts.
 
     Uses an ITERATIVE DFS implementation (not recursive) to avoid Python's
     default recursion limit (~1000 frames) which causes crashes on large repos
     with deep call chains (e.g. OpenClaw-scale C++ codebases).
     """
-    global scc_map, scc_members
-    scc_map = {}
-    scc_members = {}
+    new_scc_map: dict = {}
+    new_scc_members: dict = {}
 
     index_counter = [0]
     scc_id_counter = [0]
@@ -530,7 +938,7 @@ def detect_sccs():
     index = {}
     lowlink = {}
 
-    for start in call_graph:
+    for start in cg:
         if start in index:
             continue
 
@@ -543,7 +951,7 @@ def detect_sccs():
         # dfs_stack holds (node, neighbor_iterator) pairs.
         # Using iter() + next() lets us resume exactly where we left off
         # after processing each neighbour — mimicking the recursive call stack.
-        dfs_stack = [(start, iter(call_graph.get(start, [])))]
+        dfs_stack = [(start, iter(cg.get(start, [])))]
 
         while dfs_stack:
             node, it = dfs_stack[-1]
@@ -555,7 +963,7 @@ def detect_sccs():
                     index_counter[0] += 1
                     stack.append(neighbor)
                     on_stack.add(neighbor)
-                    dfs_stack.append((neighbor, iter(call_graph.get(neighbor, []))))
+                    dfs_stack.append((neighbor, iter(cg.get(neighbor, []))))
                 elif neighbor in on_stack:
                     # Back edge — update lowlink in place
                     lowlink[node] = min(lowlink[node], index[neighbor])
@@ -573,12 +981,14 @@ def detect_sccs():
                         w = stack.pop()
                         on_stack.discard(w)
                         scc_nodes.append(w)
-                        scc_map[w] = scc_id_counter[0]
+                        new_scc_map[w] = scc_id_counter[0]
                         if w == node:
                             break
                     if len(scc_nodes) > 1:
-                        scc_members[scc_id_counter[0]] = scc_nodes
+                        new_scc_members[scc_id_counter[0]] = scc_nodes
                     scc_id_counter[0] += 1
+
+    return new_scc_map, new_scc_members
 
 
 @app.get("/map-repo-stream")
@@ -614,16 +1024,7 @@ def map_repo_stream(path: str):
         yield f"data: {json.dumps({'type': 'nodes', 'nodes': [root_node], 'links': []})}\n\n"
 
         # Collect all relevant source files
-        VALID_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".ipynb",
-                      ".c", ".cpp", ".h", ".hpp", ".java", ".cs", ".go", ".rs"}
-        file_paths = []
-        for root_dir, dirs, files in os.walk(clean_path):
-            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
-            for file in files:
-                if file in IGNORE_FILES:
-                    continue
-                if any(file.endswith(ext) for ext in VALID_EXTS):
-                    file_paths.append((os.path.join(root_dir, file), clean_path))
+        file_paths = _collect_files(clean_path)
 
         # Tell the frontend how many files to expect (used for progress bar)
         yield f"data: {json.dumps({'type': 'meta', 'totalFiles': len(file_paths)})}\n\n"
@@ -632,7 +1033,12 @@ def map_repo_stream(path: str):
         fingerprint = _compute_fingerprint(file_paths)
         cached = _try_load_cache(clean_path, fingerprint)
         if cached:
-            # Stream cached data in chunks — still feels instant but progressive
+            # Reset globals before restoring from cache to avoid stale state
+            global_symbols = {}
+            call_graph = {}
+            reverse_call_graph = {}
+            scc_map.clear()
+            scc_members.clear()
             all_nodes_c = cached["nodes"]
             all_links_c = cached["links"]
             call_graph.update(cached["call_graph"])
@@ -646,6 +1052,7 @@ def map_repo_stream(path: str):
                     global_symbols[name] = node["id"]
             all_nodes = all_nodes_c
             all_links = all_links_c
+            _rebuild_nodes_by_id()
 
             CHUNK = 80
             struct_links = [l for l in all_links_c if l.get("type") != "call"]
@@ -717,23 +1124,14 @@ def map_repo_stream(path: str):
         for i in range(0, len(call_links), CHUNK):
             yield f"data: {json.dumps({'type': 'links', 'links': call_links[i:i + CHUNK]})}\n\n"
 
-        # Build adjacency lists
-        for lnk in all_links:
-            if lnk.get('type') == 'call':
-                src, tgt = lnk['source'], lnk['target']
-                if src not in call_graph:
-                    call_graph[src] = []
-                if tgt not in call_graph[src]:
-                    call_graph[src].append(tgt)
-                if tgt not in reverse_call_graph:
-                    reverse_call_graph[tgt] = []
-                if src not in reverse_call_graph[tgt]:
-                    reverse_call_graph[tgt].append(src)
+        # Build adjacency lists (O(n), deduped via sets internaly)
+        call_graph, reverse_call_graph = _build_adjacency_lists(all_links)
 
         all_nodes = local_all_nodes
 
-        # Phase 3: SCC detection + cache save (user doesn't need to wait)
-        detect_sccs()
+        # Phase 3: SCC detection + cache save + node lookup rebuild
+        scc_map, scc_members = detect_sccs(call_graph)
+        _rebuild_nodes_by_id()
         _save_cache(clean_path, fingerprint,
                     local_all_nodes, all_links,
                     call_graph, reverse_call_graph,
@@ -756,24 +1154,24 @@ def build_reverse_call_flow(function_id: str, max_depth: int, max_nodes: int):
     - Cycle-Safe: Records edges within cycles without infinite loops.
     - Depth-Limited but SCC-preserving (if one member is in depth, all are included).
     """
-    # Validate function exists
-    nodes_by_id = {n['id']: n for n in all_nodes}
+    # Use module-level lookup (built once per scan, not per click)
+    nodes_by_id = _nodes_by_id
     if function_id not in nodes_by_id:
         return {"error": "Function not found in call graph"}
-    
+
     # Extract source file path for metadata
     function_parts = function_id.split(':')
     source_file_path = function_parts[1] if len(function_parts) >= 2 else ''
-    
+
     visited = set()           # For traversal control only
     result_nodes = []
     result_edges = []
     seen_edges = set()        # For edge deduplication
-    queue = [(function_id, 0)]
+    queue = deque([(function_id, 0)])
     visited.add(function_id)
-    
+
     while queue and len(result_nodes) < max_nodes:
-        current_id, depth = queue.pop(0)
+        current_id, depth = queue.popleft()
         
         if current_id in nodes_by_id:
             node = nodes_by_id[current_id]
@@ -808,11 +1206,11 @@ def build_reverse_call_flow(function_id: str, max_depth: int, max_nodes: int):
                 "sccInfo": scc_info
             })
         
-        # Get ALL callers and record ALL edges (including cycle edges)
+        # Record all caller edges, including cycle edges
         callers = reverse_call_graph.get(current_id, [])
         
         for caller_id in callers:
-            # Always record the edge (even if caller already visited)
+
             edge_key = (caller_id, current_id)
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
@@ -829,13 +1227,12 @@ def build_reverse_call_flow(function_id: str, max_depth: int, max_nodes: int):
                     "isCycleEdge": is_cycle_edge
                 })
             
-            # SCC-aware traversal: if caller is in an SCC, include ALL SCC members
-            # regardless of depth limit (never partially render an SCC)
+            # SCC-aware: if caller is in a cycle, include all SCC members atomically
             if caller_id not in visited:
                 caller_in_scc = caller_id in scc_map and scc_map[caller_id] in scc_members
-                
+
                 if caller_in_scc:
-                    # Force include all SCC members at same depth
+
                     scc_id = scc_map[caller_id]
                     for member_id in scc_members[scc_id]:
                         if member_id not in visited:
@@ -870,29 +1267,28 @@ def build_forward_call_flow(function_id: str, max_depth: int, max_nodes: int):
         - Stops if fan-out > 10
         - Stops if entering large SCC (>5 members)
     """
-    nodes_by_id = {n['id']: n for n in all_nodes}
+    nodes_by_id = _nodes_by_id
     if function_id not in nodes_by_id:
         return {"error": "Function not found in call graph"}
-    
+
     function_parts = function_id.split(':')
     source_file_path = function_parts[1] if len(function_parts) >= 2 else ''
-    
+
     visited = set()
     result_nodes = []
     result_edges = []
     seen_edges = set()
-    queue = [(function_id, 0)]
+    queue = deque([(function_id, 0)])
     visited.add(function_id)
-    
+
     while queue and len(result_nodes) < max_nodes:
-        current_id, depth = queue.pop(0)
+        current_id, depth = queue.popleft()
         
         if current_id in nodes_by_id:
             node = nodes_by_id[current_id]
             node_parts = current_id.split(':')
             node_file_path = node_parts[1] if len(node_parts) >= 2 else ''
             
-            # SCC Info
             is_in_cycle = current_id in scc_map and scc_map[current_id] in scc_members
             scc_info = None
             if is_in_cycle:
@@ -910,10 +1306,7 @@ def build_forward_call_flow(function_id: str, max_depth: int, max_nodes: int):
             total_callees = len(all_callees)
             truncated_calls = False
             
-            # Complexity Boundary: High Fan-out
-            # If this node calls too many functions, we mark it as truncated 
-            # and do not add its children to the queue (unless explicitly requested via depth 0 scan?)
-            # NOTE: We allow depth 0 (root) even if high fan-out, but won't expand children.
+            # High fan-out boundary: mark as truncated and skip expansion for non-root nodes.
             if depth > 0 and total_callees > 10:
                 truncated_calls = True
             
@@ -936,15 +1329,13 @@ def build_forward_call_flow(function_id: str, max_depth: int, max_nodes: int):
             if truncated_calls:
                 continue
 
-        # Process outgoing edges (what does it call?)
+        # Traverse outgoing call edges
         callees = call_graph.get(current_id, [])
         
-        # Complexity Boundary: Large SCC
-        # If we are currently IN a large SCC, we don't traverse out from it automatically
-        # EXCEPT for the edges internal to the SCC.
+        # Large SCC boundary: do not traverse out, only record internal edges.
         stop_transversal = False
         if is_in_cycle and scc_info and scc_info['memberCount'] > 5:
-            # We are in a large cycle. We will record edges, but we won't add external callees to queue.
+
             stop_transversal = True
 
         for callee_id in callees:
@@ -959,24 +1350,23 @@ def build_forward_call_flow(function_id: str, max_depth: int, max_nodes: int):
                                scc_map[current_id] in scc_members)
                 
                 result_edges.append({
-                    "caller": current_id,  # Caller is 'current_id' (source)
-                    "callee": callee_id,   # Callee is 'callee_id' (target)
+                    "caller": current_id,
+                    "callee": callee_id,
                     "isCycleEdge": is_cycle_edge
                 })
             
-            # Decide to traverse
+
             if callee_id not in visited:
                 callee_in_scc = callee_id in scc_map and scc_map[callee_id] in scc_members
                 
-                # Rule: Don't traverse out if we stopped at large SCC boundary
-                # UNLESS it's an internal cycle edge (we always render the full cycle)
+                # Skip external edges when at large SCC boundary
                 is_internal_scc_edge = callee_in_scc and is_in_cycle and scc_map[callee_id] == scc_map[current_id]
                 
                 if stop_transversal and not is_internal_scc_edge:
                     continue
 
                 if callee_in_scc:
-                    # Atomic inclusion
+
                     scc_id = scc_map[callee_id]
                     for member_id in scc_members[scc_id]:
                         if member_id not in visited:
@@ -1061,38 +1451,49 @@ async def forward_call_flow(req: ForwardCallFlowRequest):
 
 def find_documentation_files(file_path: str, repo_root: str) -> str:
     """
-    Searches for documentation.md files in the file's directory hierarchy.
-    Looks in: same directory, parent directories up to repo root.
-    
-    Args:
-        file_path: Absolute path to the source file being analyzed.
-        repo_root: Root directory of the repository.
-        
-    Returns:
-        str: Combined content of all found documentation.md files, or empty string.
+    Searches for documentation files in the file's directory hierarchy,
+    walking up from the source file's directory to the repo root.
+    Looks for: README.md, ARCHITECTURE.md, CONTRIBUTING.md, NOTES.md,
+    documentation.md, and common README variants.
+    Caps total content at 4000 chars to avoid drowning the LLM prompt.
     """
-    doc_content = []
+    _DOC_NAMES = (
+        "README.md", "readme.md", "README.rst", "readme.rst", "README",
+        "ARCHITECTURE.md", "architecture.md",
+        "documentation.md", "Documentation.md",
+        "CONTRIBUTING.md", "contributing.md",
+        "NOTES.md", "notes.md",
+    )
+    MAX_DOC_CHARS = 4000
+    doc_content: list = []
+    total_chars = 0
     current_dir = os.path.dirname(file_path)
     repo_root_normalized = os.path.normpath(repo_root)
-    
-    # Walk up directory tree from file location to repo root
+
     while current_dir and os.path.normpath(current_dir).startswith(repo_root_normalized):
-        doc_path = os.path.join(current_dir, "documentation.md")
-        if os.path.exists(doc_path):
-            try:
-                with open(doc_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read().strip()
+        for doc_name in _DOC_NAMES:
+            if total_chars >= MAX_DOC_CHARS:
+                break
+            doc_path = os.path.join(current_dir, doc_name)
+            if os.path.exists(doc_path):
+                try:
+                    with open(doc_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read().strip()
                     if content:
+                        remaining = MAX_DOC_CHARS - total_chars
+                        if len(content) > remaining:
+                            content = content[:remaining] + "\n...(truncated)"
                         rel_doc_path = os.path.relpath(doc_path, repo_root)
                         doc_content.append(f"[{rel_doc_path}]:\n{content}")
-            except:
-                pass
-        
+                        total_chars += len(content)
+                except Exception:
+                    pass
+
         parent = os.path.dirname(current_dir)
-        if parent == current_dir:  # Reached filesystem root
+        if parent == current_dir:  # filesystem root
             break
         current_dir = parent
-    
+
     return "\n\n---\n\n".join(doc_content)
 
 
@@ -1204,7 +1605,8 @@ def build_contextual_prompt(node_id, node_label, node_type, node_code):
     Returns:
         tuple: (caller_snippets list, callee_signatures list)
     """
-    nodes_by_id = {n['id']: n for n in all_nodes}
+    # Use module-level lookup (built once per scan, not per click)
+    nodes_by_id = _nodes_by_id
     
     MAX_CALLERS = 5
     MAX_CALLEES = 5
@@ -1251,150 +1653,466 @@ def build_contextual_prompt(node_id, node_label, node_type, node_code):
     
     return caller_snippets, callee_signatures
 
+class ChatRequest(BaseModel):
+    messages: list[dict]
+    context: dict
+
+class NodeSourceRequest(BaseModel):
+    node_id: str
+    file_path: str
+
+@app.post("/node-source")
+async def node_source(req: NodeSourceRequest):
+    """
+    Returns the source code for a specific node, or the entire file if it's a file node.
+    """
+    # Try to get from cached nodes first (functions/classes have code stored)
+    code = _nodes_by_id.get(req.node_id, {}).get("code", "")
+    if code:
+        return {"code": code}
+    
+    # If not in cache (e.g., file node), try to read from disk
+    try:
+        actual_path = req.file_path
+        if not os.path.exists(actual_path):
+            rel_path = req.node_id.split(':')[1] if ':' in req.node_id else req.node_id
+            actual_path = os.path.join(current_repo_path, rel_path)
+
+        # Path traversal guard — resolved path must stay within the repo root.
+        safe_root = os.path.realpath(current_repo_path) if current_repo_path else None
+        resolved = os.path.realpath(actual_path)
+        if safe_root and not resolved.startswith(safe_root):
+            return {"error": "Path outside repository", "code": ""}
+
+        with open(actual_path, "r", encoding="utf-8") as f:
+            code = f.read()
+        return {"code": code}
+    except Exception as e:
+        return {"error": str(e), "code": ""}
 
 @app.post("/get-details")
 async def get_details(req: DetailRequest):
     """
     Analyzes a specific code node using an LLM (Ollama).
-    Provides an explanation of the code's purpose and logic.
-    
-    Enhanced with documentation context:
-    - Reads documentation.md files from file's directory hierarchy
-    - Extracts docstrings and comments from the code itself
+    Streams the explanation via SSE.
     """
-    def is_ollama_alive():
+    def generate():
+        if not _is_ollama_alive():
+            yield f"data: {json.dumps({'error': 'Ollama is not running.'})}\n\n"
+            return
         try:
-            response = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
-            return response.status_code == 200
-        except:
-            return False
+            actual_path = req.file_path
+            if not os.path.exists(actual_path):
+                 rel_path = req.node_id.split(':')[1]
+                 actual_path = os.path.join(TEMP_REPO_DIR, rel_path)
 
-    if not is_ollama_alive():
-        return {"description": "Ollama is not running. Please start the Ollama application to use Loom's analysis features."}
+            repo_root = current_repo_path if current_repo_path else os.path.dirname(actual_path)
 
-    try:
-        actual_path = req.file_path
-        if not os.path.exists(actual_path):
-             rel_path = req.node_id.split(':')[1]
-             actual_path = os.path.join(TEMP_REPO_DIR, rel_path)
-        
-        # Determine repository root for documentation search
-        repo_root = current_repo_path if current_repo_path else os.path.dirname(actual_path)
-        
+            doc_context = ""
+            documentation_md = find_documentation_files(actual_path, repo_root)
+            if documentation_md:
+                doc_context += f"\n\nPROJECT DOCUMENTATION:\n---\n{documentation_md}\n---"
 
+            # O(1) node lookup via module-level index
+            node_code = _nodes_by_id.get(req.node_id, {}).get("code", "")
 
-        # Gather documentation context
-        doc_context = ""
-        
-        # 1. Find documentation.md files in directory hierarchy
-        documentation_md = find_documentation_files(actual_path, repo_root)
-        if documentation_md:
-            doc_context += f"\n\nPROJECT DOCUMENTATION:\n---\n{documentation_md}\n---"
-        
-        # 2. Extract docstrings/comments from the specific code block
-        # Find the node's code from all_nodes
-        node_code = ""
-        for node in all_nodes:
-            if node.get("id") == req.node_id:
-                node_code = node.get("code", "")
-                break
-        
-        if node_code:
-            file_ext = os.path.splitext(actual_path)[1].lower()
-            docstring_context = extract_docstring_context(
-                node_code, 
-                req.label.replace("()", ""), 
-                req.node_type, 
-                file_ext
+            if node_code:
+                file_ext = os.path.splitext(actual_path)[1].lower()
+                docstring_context = extract_docstring_context(
+                    node_code, req.label.replace("()", ""), req.node_type, file_ext
+                )
+                if docstring_context:
+                    doc_context += f"\n\nEXISTING DOCUMENTATION FOR '{req.label}':\n---\n{docstring_context}\n---"
+
+            focus_code = node_code if node_code else ""
+            caller_snippets, callee_signatures = build_contextual_prompt(req.node_id, req.label, req.node_type, focus_code)
+
+            prompt_parts = [
+                f"Analyze the {req.node_type} named '{req.label}'.",
+                f"\nTARGET CODE:\n```\n{focus_code}\n```" if focus_code else "",
+            ]
+            if caller_snippets:
+                prompt_parts.append(f"\nCALLERS:")
+                for cs in caller_snippets:
+                    prompt_parts.append(f"\n{cs['label']}:\n```\n{cs['code']}\n```")
+            if callee_signatures:
+                prompt_parts.append(f"\nCALLEES:")
+                for cs in callee_signatures:
+                    prompt_parts.append(f"\n{cs['label']}:\n```\n{cs['signature']}\n```")
+            if doc_context:
+                prompt_parts.append(f"\nDOCUMENTATION:{doc_context}")
+
+            prompt_parts.append(
+                "\nExplain this code as you would during a professional code review.\n\n"
+                "Prioritize:\n"
+                "1. What problem the code solves.\n"
+                "2. Why it is implemented this way.\n"
+                "3. The key design decisions.\n"
+                "4. Important assumptions or limitations.\n"
+                "5. How it fits into the surrounding system (using supporting context when relevant).\n\n"
+                "Avoid narrating the implementation line-by-line unless the user explicitly asks for an execution walkthrough.\n"
+                "Use backticks for all identifiers. Format response as clean Markdown."
             )
-            if docstring_context:
-                doc_context += f"\n\nEXISTING DOCUMENTATION FOR '{req.label}':\n---\n{docstring_context}\n---"
+            prompt = "\n".join(p for p in prompt_parts if p)
 
-        # The specific code block being analyzed
-        focus_code = node_code if node_code else ""
-
-        # Build call-graph context instead of dumping the full file
-        caller_snippets, callee_signatures = build_contextual_prompt(
-            req.node_id, req.label, req.node_type, focus_code
-        )
-
-        # Build the user prompt with targeted context from the call graph
-        prompt_parts = [
-            f"Analyze the {req.node_type} named '{req.label}'.",
-            f"\nTARGET CODE (this is what you are analyzing):\n```\n{focus_code}\n```" if focus_code else "",
-        ]
-
-        # Add caller context (who calls this?)
-        if caller_snippets:
-            prompt_parts.append(f"\nCALLERS (these functions/classes call '{req.label}'):")
-            for cs in caller_snippets:
-                prompt_parts.append(f"\n{cs['label']}:\n```\n{cs['code']}\n```")
-
-        # Add callee signatures (what does this call?)
-        if callee_signatures:
-            prompt_parts.append(f"\nCALLEES (functions/classes that '{req.label}' uses):")
-            for cs in callee_signatures:
-                prompt_parts.append(f"\n{cs['label']}:\n```\n{cs['signature']}\n```")
-
-        if doc_context:
-            prompt_parts.append(f"\nDOCUMENTATION:{doc_context}")
-
-        prompt_parts.append(
-            "\nRespond in this exact format:\n"
-            "PURPOSE: What this code does — one or two sentences.\n"
-            "HOW IT WORKS: How it accomplishes its purpose — reference specific variables, calls, and logic branches you can see in the target code. 2-4 sentences.\n"
-            "USAGE: How this code is used by its callers — reference the specific caller functions shown above and explain the role this code plays in each. If no callers are shown, write NOT CALLED DIRECTLY or explain if it is an entry point/endpoint.\n"
-            "ISSUES: Any bugs, edge cases, or concerns visible in the code. Write NONE if nothing stands out."
-        )
-
-        prompt = "\n".join(p for p in prompt_parts if p)
-
-        system_message = (
-            "You are a code analysis tool. Your job is to explain what code does based ONLY on what is explicitly visible in the provided source code.\n\n"
-            "STRICT RULES:\n"
-            "- ONLY describe logic, variables, and behavior you can directly see in the code.\n"
-            "- NEVER invent function behavior, parameters, return values, or side effects that are not visible.\n"
-            "- NEVER speculate about code you cannot see. If something is unclear, say UNKNOWN.\n"
-            "- Reference specific line details (variable names, function calls, conditions) to support every claim.\n"
-            "- Be concise. Do not pad your response with generic software engineering advice.\n"
-            "- Follow the requested output format exactly."
-        )
-
-        payload = {
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": prompt}
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "top_p": 0.5
+            payload = {
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": (
+                        "You are a code analysis assistant. Explain code based ONLY on what is explicitly visible in the provided source. "
+                        "Never invent behavior not shown. Be concise and precise. "
+                        "Format your response as clean Markdown: use ## headers, backtick code spans for identifiers, and bullet points for lists."
+                    )},
+                    {"role": "user", "content": prompt}
+                ],
+                "stream": True,
+                "options": {
+                    "temperature": 0.2,
+                    "top_p": 0.5,
+                    "num_ctx": 8192,
+                    "num_predict": -1
+                }
             }
-        }
-        r = await asyncio.to_thread(requests.post, OLLAMA_URL, json=payload, timeout=60)
-        result = r.json()
-        if "error" in result:
-            return {"description": f"Ollama Error: {result['error']}"}
-        return {"description": result["message"]["content"]}
-    except Exception as e: 
-        return {"description": f"Analysis Failed: {str(e)}"}
+
+            with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=300) as r:
+                for line in r.iter_lines():
+                    if line:
+                        chunk = json.loads(line)
+                        if chunk.get("error"):
+                            yield f"data: {json.dumps({'error': chunk['error']})}\n\n"
+                            return
+                        token = chunk.get("message", {}).get("content", "")
+                        if token:
+                            yield f"data: {json.dumps({'content': token})}\n\n"
+                        if chunk.get("done"):
+                            break
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+def _detect_chat_intent(messages: list) -> str:
+    """
+    Classifies the user's latest question into one of three modes:
+    - 'bug'          → simulation, variable tracking, failure analysis
+    - 'architecture' → relationships, dependencies, module design
+    - 'explain'      → purpose, inputs, outputs (default)
+
+    Uses compiled regex with word boundaries so e.g. 'race' doesn't
+    match inside 'brace_count'.
+    """
+    if not messages:
+        return 'explain'
+    last_user = next(
+        (m['content'] for m in reversed(messages) if m.get('role') == 'user'),
+        ''
+    ).lower()
+
+    _BUG_RE = re.compile(
+        r'\b(?:'
+        r'fail|crash|bug|error|wrong|break|edge\s*cases?|exception|undefined|null|'
+        r'infinite|race\s+condition|race(?!\w)|leak|off-by|incorrect|fix|track|simulate|'
+        r'step\s*through|trace|will\s+(?:this|it)\s+(?:fail|crash|break|error|work)'
+        r')\b'
+    )
+    _ARCH_RE = re.compile(
+        r'\b(?:'
+        r'architecture|design|relate|depend|module|structure|pattern|connect|'
+        r'who\s+calls|what\s+calls|relationship|coupling|cohesion|refactor|'
+        r'compare|difference|how\s+does\s+.+\s+fit'
+        r')\b'
+    )
+
+    if _BUG_RE.search(last_user):
+        return 'bug'
+    if _ARCH_RE.search(last_user):
+        return 'architecture'
+    return 'explain'
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    """
+    Handles AI chat messages using Ollama.
+    Streams the response back via SSE.
+    """
+    def generate():
+        if not _is_ollama_alive():
+            yield f"data: {json.dumps({'error': 'Ollama is not running.'})}\n\n"
+            return
+        try:
+            ctx = req.context
+
+            # ----------------------------------------------------------------
+            # No node selected — chat requires a focused node
+            # ----------------------------------------------------------------
+            if not ctx.get('nodeId'):
+                yield f"data: {json.dumps({'error': 'Select a node in the graph to start chatting.'})}\n\n"
+                return
+
+            # ----------------------------------------------------------------
+            # Shared Analysis Principles — injected into every prompt
+            # ----------------------------------------------------------------
+            ANALYSIS_PRINCIPLES = (
+                "## Conversation Routing\n\n"
+                "Determine whether the user is requesting code analysis or general conversation.\n\n"
+                "Use Code Analysis Mode when the user is:\n"
+                "* asking what code does\n"
+                "* asking how code works\n"
+                "* asking about bugs, behavior, architecture, performance, security, design, dependencies, or implementation details\n"
+                "* referring to identifiers, functions, classes, files, variables, stack traces, logs, or source code\n\n"
+                "Use Conversation Mode when the user is:\n"
+                "* joking\n"
+                "* making casual conversation\n"
+                "* asking for opinions\n"
+                "* brainstorming ideas\n"
+                "* discussing projects informally\n"
+                "* speaking about the codebase in a non-technical way\n\n"
+                "In Conversation Mode:\n"
+                "* Respond naturally.\n"
+                "* Humor is allowed.\n"
+                "* Do not force structured analysis.\n"
+                "* Do not refuse obvious jokes.\n"
+                "* Be conversational while remaining truthful.\n\n"
+                "---\n\n"
+                "## Analysis Principles\n\n"
+                "When analyzing code:\n\n"
+                "### Evidence\n\n"
+                "Distinguish between:\n"
+                "* Observation: directly visible in the code or provided context.\n"
+                "* Inference: a conclusion supported by observations but not proven.\n"
+                "* Unknown: information that cannot be determined from the available evidence.\n\n"
+                "Do not present inferences as facts.\n"
+                "If evidence is insufficient, say so.\n"
+                "Do not invent implementation details, runtime behavior, architecture, developer intent, or historical decisions unless supported by evidence.\n\n"
+                "### Code Reasoning\n\n"
+                "Reason from the implementation.\n\n"
+                "When evaluating behavior:\n"
+                "1. Follow the actual control flow.\n"
+                "2. Track relevant variable state changes.\n"
+                "3. Reference the code responsible for the behavior.\n"
+                "4. Prefer concrete execution paths over summaries.\n\n"
+                "Do not assume handling for comments, strings, regex literals, template literals, frameworks, or libraries unless the implementation explicitly contains logic for them.\n\n"
+                "### Bug Analysis\n\n"
+                "A bug requires:\n"
+                "* Evidence from the implementation\n"
+                "* A plausible failure mechanism\n\n"
+                "Preferred:\n"
+                "* Reproduction input\n"
+                "* Expected behavior\n"
+                "* Actual behavior\n\n"
+                "If those are not available, classify the finding as:\n"
+                "* Concern\n"
+                "* Limitation\n"
+                "* Assumption\n"
+                "* Unknown\n\n"
+                "Not a bug.\n\n"
+                "### Response Style\n\n"
+                "* Speak naturally.\n"
+                "* Be concise.\n"
+                "* Avoid customer-support language.\n"
+                "* Use backticks for identifiers.\n"
+                "* Explain your reasoning when it matters.\n"
+                "* When giving examples, prefer examples that appear in the provided repository context. "
+                "If no repository example is available, either state that explicitly or omit the example.\n"
+                "* Sound like an experienced developer reviewing code, not a compliance document.\n"
+            )
+
+            # ----------------------------------------------------------------
+            # NODE MODE — build system prompt from context
+            # ----------------------------------------------------------------
+            node_label = ctx.get('nodeLabel', 'Unknown')
+            node_type  = ctx.get('nodeType', 'Unknown')
+            file_path  = ctx.get('filePath', 'Unknown')
+            code       = ctx.get('code', '')
+
+            # Detect file extension for code fence language tag
+            ext = file_path.rsplit('.', 1)[-1].lower() if '.' in file_path else ''
+            EXT_LANG = {
+                'py': 'python', 'js': 'javascript', 'jsx': 'javascript',
+                'ts': 'typescript', 'tsx': 'typescript', 'rs': 'rust',
+                'go': 'go', 'java': 'java', 'cs': 'csharp',
+                'cpp': 'cpp', 'c': 'c', 'rb': 'ruby', 'php': 'php',
+            }
+            lang = EXT_LANG.get(ext, ext or 'text')
+
+            # ----------------------------------------------------------------
+            # Caller / Callee context — full function bodies from server memory
+            # ----------------------------------------------------------------
+            MAX_CALLER_SNIPPETS = 3
+            MAX_CALLEE_SNIPPETS = 1
+            MAX_SNIPPET_CHARS   = 1500  # safety cap per body
+
+            node_id = ctx.get('nodeId', '')
+
+            def _get_lang_for_node(nid: str) -> str:
+                """Infer markdown language tag from the node's file path."""
+                node_obj = _nodes_by_id.get(nid, {})
+                np = node_obj.get('path', '') or ''
+                ne = np.rsplit('.', 1)[-1].lower() if '.' in np else ''
+                return EXT_LANG.get(ne, ne or 'text')
+
+            def _format_snippet(nid: str, role: str) -> str:
+                """Return a markdown section for one caller/callee function body."""
+                node_obj = _nodes_by_id.get(nid)
+                if not node_obj:
+                    return ''
+                body = (node_obj.get('code') or '')[:MAX_SNIPPET_CHARS]
+                if not body:
+                    return ''
+                label  = node_obj.get('label', nid)
+                npath  = node_obj.get('path', '')
+                nlang  = _get_lang_for_node(nid)
+                return (
+                    f"\n### `{label}` — {npath}\n"
+                    f"```{nlang}\n{body}\n```\n"
+                )
+
+            # Callers — from server-side reverse_call_graph (not frontend payload)
+            raw_callers = list(reverse_call_graph.get(node_id, []))
+            # Prioritise: same file first, then by outgoing degree (descending)
+            def _caller_priority(cid: str):
+                is_same_file = 1 if file_path in cid else 0
+                degree = len(call_graph.get(cid, []))
+                return (-is_same_file, -degree)
+            raw_callers.sort(key=_caller_priority)
+            selected_callers = raw_callers[:MAX_CALLER_SNIPPETS]
+
+            # Callees — from server-side call_graph
+            raw_callees = list(call_graph.get(node_id, []))
+            selected_callees = raw_callees[:MAX_CALLEE_SNIPPETS]
+
+            caller_text = ''
+            if selected_callers:
+                caller_text = (
+                    '\n## Caller Context\n\n'
+                    'The following functions directly invoke the selected function.\n'
+                    'These are provided as supporting evidence to help infer the selected function\'s '
+                    'role, expected inputs, assumptions, and intended behavior.\n'
+                    'Use this context to improve reasoning about the selected function.\n'
+                    'Do not analyze these functions independently unless the user\'s question is specifically about them.\n'
+                )
+                for cid in selected_callers:
+                    caller_text += _format_snippet(cid, 'caller')
+
+            callee_text = ''
+            if selected_callees:
+                callee_text = (
+                    '\n## Callee Context\n\n'
+                    'The following functions are directly invoked by the selected function.\n'
+                    'These are provided as supporting evidence to help understand the selected function\'s '
+                    'dependencies and implementation.\n'
+                    'Use this context when it helps explain the selected function.\n'
+                    'Do not analyze these functions independently unless the user\'s question is specifically about them.\n'
+                )
+                for ceid in selected_callees:
+                    callee_text += _format_snippet(ceid, 'callee')
+
+            # Format graph name list (still useful for orientation)
+            neighbors_text = ''
+            raw_neighbors = ctx.get('neighbors', [])
+            if isinstance(raw_neighbors, dict):
+                # callers-graph perspective mode
+                perspective = raw_neighbors.get('perspective', 'unknown')
+                nodes_list  = raw_neighbors.get('nodes', [])
+                neighbors_text = f"\n## Graph Context ({perspective} call graph)\n"
+                neighbors_text += '\n'.join(f'- `{n}`' for n in nodes_list[:15])
+
+            git_text = ''
+            if ctx.get('gitStatus'):
+                git_text = f"\n## Git Status\nThis file has uncommitted changes: `{ctx['gitStatus']}`\n"
+
+            # Assemble: role + principles + evidence
+            system_prompt = (
+                "You are a code intelligence assistant embedded in Loom.\n\n"
+                f"{ANALYSIS_PRINCIPLES}"
+                "---\n\n"
+                f"# Selected {node_type.capitalize()}\n\n"
+                f"**Name:** `{node_label}`\n\n"
+                f"**File:** `{file_path}`\n"
+            )
+
+            if code:
+                system_prompt += (
+                    f"\n# Source Code\n\n"
+                    f"```{lang}\n{code}\n```\n"
+                )
+
+            system_prompt += neighbors_text
+            system_prompt += caller_text
+            system_prompt += callee_text
+            system_prompt += git_text
+
+            # Build messages array: System prompt + trimmed conversation history
+            # Trim BEFORE prepending system message so the system message is never
+            # counted against MAX_HISTORY and is always present in full.
+            MAX_HISTORY = 12
+            trimmed_messages = req.messages[-MAX_HISTORY:]
+            messages = [{"role": "system", "content": system_prompt}] + trimmed_messages
+
+
+            payload = {
+                "model": MODEL,
+                "messages": messages,
+                "stream": True,
+                "options": {
+                    "temperature": 0.3,
+                    "top_p": 0.6,
+                    "num_ctx": 8192,
+                    "num_predict": -1
+                }
+            }
+
+
+            with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=300) as r:
+                for line in r.iter_lines():
+                    if line:
+                        chunk = json.loads(line)
+                        if chunk.get("error"):
+                            yield f"data: {json.dumps({'error': chunk['error']})}\n\n"
+                            return
+                        token = chunk.get("message", {}).get("content", "")
+                        if token:
+                            yield f"data: {json.dumps({'content': token})}\n\n"
+                        if chunk.get("done"):
+                            break
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 @app.post("/clear-cache")
 async def clear_cache():
     """
-    Resets all server state and clears temporary files.
+    Fully resets Loom state:
+    1. Deletes all on-disk graph JSON cache files from CACHE_DIR.
+    2. Wipes the GitHub clone temp directory.
+    3. Clears all in-memory graph globals.
     Useful for switching repositories cleanly.
     """
-    global call_graph, reverse_call_graph, all_nodes, scc_map, scc_members
+    global call_graph, reverse_call_graph, all_nodes, scc_map, scc_members, _nodes_by_id
     try:
+        # 1. Delete on-disk cache JSON files
+        disk_deleted = 0
+        if os.path.exists(CACHE_DIR):
+            for fname in os.listdir(CACHE_DIR):
+                if fname.endswith(".json"):
+                    os.remove(os.path.join(CACHE_DIR, fname))
+                    disk_deleted += 1
+        # 2. Wipe GitHub clone temp dir
         force_rmtree(TEMP_REPO_DIR)
+        # 3. Reset in-memory state
         call_graph = {}
         reverse_call_graph = {}
         all_nodes = []
         scc_map = {}
         scc_members = {}
-        return {"status": "success", "message": "Cache and graph state cleared."}
+        _nodes_by_id = {}
+        return {"status": "success", "message": f"Cleared {disk_deleted} cache file(s) and reset graph state."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -1493,7 +2211,7 @@ async def git_status(req: GitStatusRequest):
         if result.returncode != 0:
             return {"is_git_repo": False, "status": {}, "error": result.stderr}
         
-        print(f"DEBUG: git status output for {repo_path}:\n{result.stdout}")
+
 
         # Parse output: XY PATH format
         file_status = {}

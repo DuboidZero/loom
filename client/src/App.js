@@ -9,7 +9,9 @@ import OllamaInstaller from './OllamaInstaller';
 import GitInstaller from './GitInstaller';
 import WelcomeScreen, { saveRecentWorkspace } from './WelcomeScreen';
 import Sidebar from './Sidebar';
+import ReactMarkdown from 'react-markdown';
 import logo from './logo.png';
+import BottomDock from './BottomDock';
 
 const LAST_WORKSPACE_KEY = 'loom_last_workspace';
 
@@ -228,18 +230,30 @@ const API = "http://127.0.0.1:8000";
  * - Resetting view when selection clears
  * - Constraining zoom levels based on graph size
  */
-function CameraHandler({ selected, layout, sphereRadius }) {
+function CameraHandler({ selected, layout, sphereRadius, focusSignal, dockOpen }) {
   const controls = useRef();
   useEffect(() => {
-    if (selected && layout[selected.id]) {
-      const [x, y, z] = layout[selected.id];
-      controls.current?.setLookAt(x, y + 10, z + 50, x, y, z, true);
-    } else {
-      const defaultDistance = sphereRadius * 3.5;
-      const defaultHeight = sphereRadius * 2;
-      controls.current?.setLookAt(0, defaultHeight, defaultDistance, 0, 0, 0, true);
-    }
-  }, [selected, layout, sphereRadius]);
+    // Defer via rAF: ensures CameraControls ref is populated after Three.js
+    // has committed the scene. Without this, the ref is null on first mount
+    // (e.g. after switching back from callers view) and setLookAt silently
+    // no-ops, leaving the camera at the default far-out position.
+    const rafId = requestAnimationFrame(() => {
+      if (selected && layout[selected.id]) {
+        const [x, y, z] = layout[selected.id];
+        const zOffset = dockOpen ? 15 : 50;
+        const yOffset = dockOpen ? 2 : 10;
+        controls.current?.setLookAt(x, y + yOffset, z + zOffset, x, y, z, true);
+      } else if (!selected) {
+        // Only zoom out when selection is explicitly cleared, not on signal
+        const defaultDistance = sphereRadius * 3.5;
+        const defaultHeight   = sphereRadius * 2;
+        controls.current?.setLookAt(0, defaultHeight, defaultDistance, 0, 0, 0, true);
+      }
+    });
+    return () => cancelAnimationFrame(rafId);
+  // focusSignal forces re-fire even when `selected` is the same object,
+  // e.g. when "View in Main Graph" is clicked for an already-selected node.
+  }, [selected, layout, sphereRadius, focusSignal, dockOpen]);
   return <CameraControls ref={controls} makeDefault minDistance={10} maxDistance={sphereRadius * 10} />;
 }
 
@@ -259,7 +273,31 @@ export default function App() {
 
   const [view, setView] = useState("map"); // 'map' | 'callers' | 'welcome'
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [leftWidth, setLeftWidth]   = useState(260);  // px — left sidebar
+  const [rightWidth, setRightWidth] = useState(360);  // px — right inspector
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  // Incrementing this forces CameraHandler to re-focus even when `selected`
+  // hasn't changed (same node reference, different context).
+  const [cameraFocusSignal, setCameraFocusSignal] = useState(0);
+
+  // --- Bottom Dock State ---
+  const [dockOpen, setDockOpen]       = useState(false);
+  const [dockHeight, setDockHeight]   = useState(320);  // px
+  const [dockTab, setDockTab]         = useState('source'); // 'source' | 'chat'
+
+  // Source editor — DECOUPLED from graph selection.
+  // selectedNode drives the inspector; openDocument drives the editor.
+  // Clicking a node in the graph does NOT change openDocument.
+  // Only explicit actions ("View Source" button, Ctrl+1 with a node selected) do.
+  const [openDocument, setOpenDocument] = useState(null); // { node, code, language }
+
+  // AI Chat — history persists across node changes
+  const [chatMessages, setChatMessages] = useState([]);   // [{role, content}]
+  const [chatInput, setChatInput]       = useState('');
+  const [chatLoading, setChatLoading]   = useState(false);
+  // Tracks the node that was active when the most recent chat message was sent.
+  // When this differs from `selected`, the context-switched banner appears.
+  const [chatContextNode, setChatContextNode] = useState(null);
 
   const [config, setConfig] = useState({
     ollamaHost: "http://127.0.0.1:11434",
@@ -277,11 +315,15 @@ export default function App() {
   const streamBufferRef = useRef({ nodes: [], links: [] });
   const [scanProgress, setScanProgress] = useState({ files: 0, total: 0, phase: '' });
 
-  // Derived workspace display name
-  const workspaceName = repoPath ? repoPath.replace(/\\/g, '/').split('/').pop() || repoPath : null;
+  // Derived workspace display name — memoised so the regex+split doesn't run on every render
+  const workspaceName = useMemo(
+    () => repoPath ? repoPath.replace(/\\/g, '/').split('/').pop() || repoPath : null,
+    [repoPath]
+  );
 
   // --- Interaction State ---
   const [selected, setSelected] = useState(null);
+  const abortRef = useRef(null); // Cancels in-flight AI analysis fetch when a new node is clicked
   const [details, setDetails] = useState("");
   const [search, setSearch] = useState("");
 
@@ -354,6 +396,206 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loading]);
 
+  // --- Bottom Dock Handlers ---
+  const startDockResize = useCallback((e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = dockHeight;
+    const maxH = window.innerHeight * 0.8;
+
+    // Add .no-transition class during drag to prevent jank
+    const dockEl = document.querySelector('.bottom-dock');
+    if (dockEl) dockEl.classList.add('no-transition');
+
+    const onMove = (ev) => {
+      // Moving up (negative deltaY) increases dock height
+      const deltaY = startY - ev.clientY;
+      const next = Math.max(140, Math.min(maxH, startHeight + deltaY));
+      setDockHeight(next);
+      if (!dockOpen && next > 140) setDockOpen(true);
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (dockEl) dockEl.classList.remove('no-transition');
+      // Trigger a resize event to ensure Monaco updates its layout
+      window.dispatchEvent(new Event('resize'));
+    };
+
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [dockHeight, dockOpen]);
+
+  const openSource = useCallback(async (node) => {
+    if (!node) return;
+    let language = 'javascript';
+    if (node.type === 'function' || node.type === 'class') {
+      const ext = node.id.split(':')[1]?.split('.').pop() || '';
+      language = ext === 'py' ? 'python' : ext === 'ts' || ext === 'tsx' ? 'typescript' : 'javascript';
+    } else if (node.type === 'file') {
+      const ext = node.label.split('.').pop();
+      language = ext === 'py' ? 'python' : ext === 'ts' || ext === 'tsx' ? 'typescript' : 'javascript';
+    }
+    
+    let code = node.code;
+    if (!code) {
+      const isGithub = repoPath.startsWith("http") || repoPath.includes("github.com");
+      const filePath = isGithub ? (node.id.split(':')[1] || node.label) : repoPath.replace(/\\/g, "/") + "/" + (node.id.split(':')[1] || node.label);
+      try {
+        const res = await fetch(`${API}/node-source`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ node_id: node.id, file_path: filePath })
+        });
+        const data = await res.json();
+        if (data.code) code = data.code;
+      } catch (e) {}
+    }
+
+    setOpenDocument({
+      node,
+      code: code || '// Source not available',
+      language
+    });
+    setDockTab('source');
+    setDockOpen(true);
+  }, [repoPath]);
+
+  const buildChatContext = useCallback(() => {
+    if (!selected) {
+      return {
+        repoPath,
+        view,
+        nodeCount: nodes.length
+      };
+    }
+
+    const context = {
+      nodeId: selected.id,
+      nodeLabel: selected.label,
+      nodeType: selected.type,
+      filePath: selected.id.split(':')[1] || selected.label,
+      code: selected.code,
+    };
+
+    if (view === 'callers' && callersGraphData) {
+      context.neighbors = {
+        perspective: callPerspective,
+        nodes: callersGraphData.nodes.map(n => n.label)
+      };
+    } else {
+      const relatedLinks = links.filter(l => l.source === selected.id || l.target === selected.id);
+      context.neighbors = relatedLinks.map(l => ({
+        type: l.type,
+        target: l.target === selected.id ? l.source : l.target
+      }));
+    }
+
+    if (isGitRepo && Object.keys(gitStatus).length > 0) {
+      const fileId = selected.type === 'file' ? selected.label : selected.id.split(':')[1];
+      if (gitStatus[fileId]) {
+        context.gitStatus = gitStatus[fileId];
+      }
+    }
+
+    return context;
+  }, [selected, repoPath, view, nodes.length, callersGraphData, callPerspective, links, isGitRepo, gitStatus]);
+
+  const sendChatMessage = async (msg) => {
+    if (!msg.trim() || chatLoading) return;
+
+    const context = buildChatContext();
+    setChatContextNode(selected);
+
+    // Lazy-fetch source code at send-time so the AI always sees the actual
+    // implementation. We intentionally skip file nodes (too large / no single
+    // body to extract) and skip if code was somehow already populated.
+    if (selected && selected.type !== 'file' && !context.code) {
+      try {
+        const isGithub = repoPath.startsWith('http') || repoPath.includes('github.com');
+        const filePath = isGithub
+          ? (selected.id.split(':')[1] || selected.label)
+          : repoPath.replace(/\\/g, '/') + '/' + (selected.id.split(':')[1] || selected.label);
+        const res = await fetch(`${API}/node-source`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node_id: selected.id, file_path: filePath })
+        });
+        const data = await res.json();
+        if (data.code) context.code = data.code;
+      } catch (e) {
+        // Non-fatal — chat continues without code context
+        console.warn('sendChatMessage: could not fetch source for', selected.id, e);
+      }
+    }
+
+    const newMessages = [...chatMessages, { role: 'user', content: msg }];
+    setChatMessages(newMessages);
+    setChatInput('');
+    setChatLoading(true);
+
+    try {
+      const res = await fetch(`${API}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: newMessages,
+          context
+        })
+      });
+
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let assistantMsg = '';
+
+      setChatMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.error) throw new Error(evt.error);
+            if (evt.content) {
+              assistantMsg += evt.content;
+              // Spread a new object to avoid mutating the existing message in-place
+              setChatMessages(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  content: assistantMsg
+                };
+                return updated;
+              });
+            }
+          } catch (e) {
+            console.error('SSE Error:', e);
+          }
+        }
+      }
+    } catch (e) {
+      setChatMessages(prev => [...prev, { role: 'assistant', content: `**Error:** ${e.message}` }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  // Consolidated keyboard handler
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Don't trigger shortcuts when typing in input fields
@@ -361,7 +603,32 @@ export default function App() {
 
       const key = e.key.toLowerCase();
 
-      // Keyboard shortcuts using configurable keybinds
+      // --- Meta/Ctrl Shortcuts ---
+      if (e.ctrlKey || e.metaKey) {
+        if (key === 'b') {
+          e.preventDefault();
+          setSidebarCollapsed(c => !c);
+          return;
+        }
+        if (key === 'j') {
+          e.preventDefault();
+          setDockOpen(o => !o);
+          return;
+        }
+        if (key === '1') {
+          e.preventDefault();
+          if (selected) openSource(selected);
+          return;
+        }
+        if (key === '2') {
+          e.preventDefault();
+          setDockTab('chat');
+          setDockOpen(true);
+          return;
+        }
+      }
+
+      // --- Regular Shortcuts ---
       if (key === keybinds.forward) {
         setCallPerspective('forward');
       } else if (key === keybinds.reverse) {
@@ -376,31 +643,73 @@ export default function App() {
         setShowModeMenu(false);
         setShowSettingsMenu(false);
       } else if (key === 'escape') {
-        // Esc → Close menus or clear selection
+        // Escape priority:
+        // 1. Legacy Menus
         if (showModeMenu || showExportMenu || showSettingsMenu) {
           setShowModeMenu(false);
           setShowExportMenu(false);
           setShowSettingsMenu(false);
-        } else if (selected) {
-          // Navigate up hierarchy
-          if (['function', 'class', 'interface', 'struct'].includes(selected.type)) {
-            const parts = selected.id?.split(':');
-            if (parts && parts.length >= 2) {
-              const filePath = parts[1];
-              const parentFile = nodes.find(n => n.type === 'file' && n.id?.includes(filePath));
-              if (parentFile) {
-                setSelected(parentFile);
-                return;
+          return;
+        }
+        
+        // 2. Bottom Dock
+        if (dockOpen) {
+          setDockOpen(false);
+          return;
+        }
+
+        // 3. Callers View
+        if (view === 'callers') {
+          const targetNode = inspectorNode || selected;
+          setView('map');
+          setInspectorNode(null);
+          if (targetNode) {
+            const targetId = targetNode.id;
+            const targetName = targetNode.name || targetNode.label;
+            setTimeout(() => {
+              let mainNode = nodes.find(n => n.id === targetId);
+              if (!mainNode && targetName) {
+                mainNode = nodes.find(
+                  n => n.label === targetName && (n.type === 'function' || n.type === 'class')
+                );
+              }
+              if (mainNode) {
+                setSelected(null);
+                setTimeout(() => setSelected(mainNode), 50);
+              }
+            }, 150);
+          }
+          return;
+        }
+        
+        // 4. Map View (Inspector -> Selection -> Parent Navigation)
+        if (view === 'map') {
+          if (!inspectorCollapsed) {
+            setInspectorCollapsed(true);
+          } else if (selected) {
+            if (['function', 'class', 'interface', 'struct'].includes(selected.type)) {
+              const parts = selected.id?.split(':');
+              if (parts && parts.length >= 2) {
+                const filePath = parts[1];
+                const parentFile = nodes.find(n => n.type === 'file' && n.id?.includes(filePath));
+                if (parentFile) {
+                  setSelected(parentFile);
+                  return;
+                }
               }
             }
+            setSelected(null);
           }
-          setSelected(null);
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selected, nodes, showModeMenu, showExportMenu, showSettingsMenu]);
+  }, [
+    keybinds, view, selected, inspectorNode, nodes, 
+    showModeMenu, showExportMenu, showSettingsMenu,
+    dockOpen, inspectorCollapsed, openSource, dockHeight
+  ]);
 
   /**
    * Updates global configuration on the backend.
@@ -425,57 +734,52 @@ export default function App() {
     } catch (e) { alert("Failed to start Ollama: " + e); }
   };
 
-  // Handle Escape key navigation
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        // Prevent interfering with inputs
-        if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+  // ── Resize callbacks ──────────────────────────────────────────────────────
+  // Both follow the same pattern: capture startX + startWidth at mousedown,
+  // then compute delta on mousemove. Avoids stale closure issues because
+  // startWidth is captured once (not read from state on every frame).
 
-        if (view === 'callers') {
-          // Priority: Inspected Node -> Root Node (Selected)
-          const targetNode = inspectorNode || selected;
-
-          // Switch view and clean up overlay
-          setView("map");
-          setInspectorNode(null);
-
-          if (targetNode) {
-            const targetId = targetNode.id;
-            const targetName = targetNode.name || targetNode.label; // Handle inconsistent naming (name vs label)
-
-            // Delay to allow Map view to mount/layout
-            setTimeout(() => {
-              let mainNode = nodes.find(n => n.id === targetId);
-              // Fallback matching
-              if (!mainNode && targetName) {
-                mainNode = nodes.find(n => n.label === targetName && (n.type === "function" || n.type === "class"));
-              }
-
-              if (mainNode) {
-                // Force selection update to trigger camera focus
-                setSelected(null);
-                setTimeout(() => setSelected(mainNode), 50);
-              } else {
-                console.warn("Target node not found in map:", targetId);
-              }
-            }, 150);
-          }
-        } else if (view === 'map') {
-          // Standard Escape behavior in map
-          if (inspectorNode) setInspectorNode(null);
-          else if (selected) setSelected(null);
-        }
-      }
+  const startLeftResize = useCallback((e) => {
+    e.preventDefault();
+    const startX     = e.clientX;
+    const startWidth = leftWidth;
+    const onMove = (ev) => {
+      const next = Math.max(160, Math.min(540, startWidth + ev.clientX - startX));
+      setLeftWidth(next);
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [view, selected, inspectorNode, nodes]);
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      document.body.style.cursor     = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor     = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  }, [leftWidth]);
 
-  /**
-   * Clears both frontend state and backend cache.
-   * Resets the application to a clean state.
-   */
+  const startRightResize = useCallback((e) => {
+    e.preventDefault();
+    const startX     = e.clientX;
+    const startWidth = rightWidth;
+    // Moving cursor LEFT increases the right panel's width
+    const onMove = (ev) => {
+      const next = Math.max(240, Math.min(640, startWidth + startX - ev.clientX));
+      setRightWidth(next);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      document.body.style.cursor     = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor     = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  }, [rightWidth]);
+
   const handleClearAll = async () => {
     setLoading(true);
     try {
@@ -905,14 +1209,38 @@ export default function App() {
   };
 
   /**
-   * Selects a node and fetches AI analysis details.
+   * Selects a node and streams AI analysis details token-by-token.
+   * Uses the SSE streaming endpoint so the user sees the response being
+   * written in real time instead of waiting for the full generation.
    */
   const inspectNode = async (node) => {
+    // Cancel any in-flight stream from a previous selection
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // Set selected immediately so the inspector renders without waiting
+    // for a network fetch. /node-source is only called by openSource() on
+    // explicit user action (Ctrl+1 / View Source). Do NOT pre-fetch here.
     setSelected(node);
-    setDetails("INITIATING DEEP SCAN...");
+
+    // File nodes don't get AI analysis — too large for context, use AI Chat.
+    if (node.type === "file") {
+      setDetails("SYSTEM: FILE NODE SELECTED.\n\nPress Ctrl+1 to view source, or Ctrl+2 to ask the AI Assistant about this file.");
+      return;
+    }
+    // Note: file nodes exit early above.
+
+    const isGithub = repoPath.startsWith("http") || repoPath.includes("github.com");
+    const filePath = isGithub
+      ? (node.id.split(':')[1] || node.label)
+      : repoPath.replace(/\\/g, "/") + "/" + (node.id.split(':')[1] || node.label);
+
+    setDetails("SCANNING...\n");
     if (["function", "class", "interface", "struct"].includes(node.type)) {
       try {
-        const isGithub = repoPath.startsWith("http") || repoPath.includes("github.com");
         const res = await fetch(`${API}/get-details`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -920,19 +1248,57 @@ export default function App() {
             node_id: node.id,
             label: node.label,
             node_type: node.type,
-            file_path: isGithub ? node.id.split(':')[1] : repoPath.replace(/\\/g, "/") + "/" + node.id.split(':')[1],
+            file_path: filePath,
             code: node.code
-          })
+          }),
+          signal: controller.signal
         });
-        const data = await res.json();
-        if (data.description && data.description.includes("Ollama is not running")) {
-          setDetails("SYSTEM ERROR: OLLAMA_OFFLINE\n\nPlease ensure Ollama is running on your system.");
+
+        if (!res.ok) {
+          setDetails("SCAN FAILED: server returned " + res.status);
           return;
         }
-        setDetails(data.description);
-      } catch (e) { setDetails("SCAN FAILED."); }
-    } else {
-      setDetails("SYSTEM: FILE NODE SELECTED.");
+
+        // Consume the SSE stream — each event has {content}, {error}, or {done}
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = "";
+        let buffer = "";
+
+        setDetails(""); // clear placeholder as first tokens arrive
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          // Stop processing if this stream was superseded
+          if (controller.signal.aborted) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop(); // keep incomplete last line for next iteration
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.error) {
+                setDetails(evt.error.includes("Ollama is not running")
+                  ? "SYSTEM ERROR: OLLAMA_OFFLINE\n\nPlease ensure Ollama is running on your system."
+                  : "SCAN FAILED: " + evt.error
+                );
+                return;
+              }
+              if (evt.content) {
+                accumulated += evt.content;
+                setDetails(accumulated);
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') return; // Silently drop cancelled requests
+        setDetails("SCAN FAILED: " + (e.message || e));
+      }
     }
   };
 
@@ -1075,27 +1441,56 @@ export default function App() {
     return links.filter(l => visibleIds.has(l.source) && visibleIds.has(l.target));
   }, [links, filteredNodes]);
 
+  // ---------------------------------------------------------------------------
+  // Colour palettes — must stay in sync with LANG_COLOURS / TYPE_COLOURS
+  // in Sidebar.js. This is the single rendering source for the 3D graph.
+  // ---------------------------------------------------------------------------
   const langMap = {
-    py: { label: "PYTHON", color: "#c2c2c2" },
-    js: { label: "JS", color: "#f7df1e" },
-    jsx: { label: "REACT", color: "#61dafb" },
-    ts: { label: "TS", color: "#007acc" },
-    tsx: { label: "TS-REACT", color: "#3178c6" },
-    cpp: { label: "C++", color: "#f34b7d" },
-    c: { label: "C", color: "#a8b9cc" },
-    java: { label: "JAVA", color: "#b07219" },
-    cs: { label: "C#", color: "#178600" },
-    go: { label: "GO", color: "#00ADD8" },
-    rs: { label: "RUST", color: "#dea584" },
-    ipynb: { label: "JUPYTER", color: "#cccac8" }
+    // ── Web / JS ecosystem ────────────────────────────────────────────────
+    py:    { label: 'PYTHON',      color: '#c2c2c2' },
+    js:    { label: 'JS',          color: '#f7df1e' },
+    jsx:   { label: 'REACT',       color: '#61dafb' },
+    ts:    { label: 'TS',          color: '#007acc' },
+    tsx:   { label: 'TS-REACT',    color: '#3178c6' },
+    // ── Systems languages ─────────────────────────────────────────────────
+    c:     { label: 'C',           color: '#a8b9cc' },
+    h:     { label: 'C HEADER',    color: '#a8b9cc' },
+    cpp:   { label: 'C++',         color: '#f34b7d' },
+    hpp:   { label: 'C++ HEADER',  color: '#f34b7d' },
+    java:  { label: 'JAVA',        color: '#b07219' },
+    cs:    { label: 'C#',          color: '#178600' },
+    rs:    { label: 'RUST',        color: '#dea584' },
+    go:    { label: 'GO',          color: '#00ADD8' },
+    // ── JVM / FP ──────────────────────────────────────────────────────────
+    scala: { label: 'SCALA',       color: '#DC322F' },
+    kt:    { label: 'KOTLIN',      color: '#7F52FF' },
+    kts:   { label: 'KOTLIN SCR',  color: '#7F52FF' },
+    // ── Scripting ─────────────────────────────────────────────────────────
+    rb:    { label: 'RUBY',        color: '#CC342D' },
+    php:   { label: 'PHP',         color: '#777BB4' },
+    lua:   { label: 'LUA',         color: '#2C7EDE' },
+    pl:    { label: 'PERL',        color: '#0298C3' },
+    pm:    { label: 'PERL MOD',    color: '#0298C3' },
+    r:     { label: 'R',           color: '#276DC3' },
+    sh:    { label: 'SHELL',       color: '#89E051' },
+    bash:  { label: 'BASH',        color: '#89E051' },
+    // ── Mobile / modern ───────────────────────────────────────────────────
+    swift: { label: 'SWIFT',       color: '#F05138' },
+    dart:  { label: 'DART',        color: '#00B4AB' },
+    // ── Functional / emerging ─────────────────────────────────────────────
+    ex:    { label: 'ELIXIR',      color: '#6E4A7E' },
+    exs:   { label: 'ELIXIR SCR',  color: '#6E4A7E' },
+    zig:   { label: 'ZIG',         color: '#F7A41D' },
+    // ── Notebooks ─────────────────────────────────────────────────────────
+    ipynb: { label: 'JUPYTER',     color: '#F37726' },
   };
 
   const typeMap = {
-    function: { label: "FUNCTIONS", color: "#2492ce" },
-    class: { label: "CLASSES", color: "#f34b7d" },
-    interface: { label: "CONTRACTS", color: "#ff00ff" },
-    struct: { label: "STRUCTS", color: "#00ffcc" },
-    module: { label: "MODULES", color: "#ffa500" }
+    function:  { label: 'FUNCTIONS', color: '#DCDCAA' },  // VSCode golden yellow
+    class:     { label: 'CLASSES',   color: '#4EC9B0' },  // VSCode teal
+    interface: { label: 'CONTRACTS', color: '#C792EA' },  // soft purple
+    struct:    { label: 'STRUCTS',   color: '#56B6C2' },  // steel cyan
+    module:    { label: 'MODULES',   color: '#E5C07B' },  // warm amber
   };
 
   const presentLanguages = useMemo(() => {
@@ -1229,26 +1624,38 @@ export default function App() {
       <div className="app-body">
         {/* Left sidebar — shown whenever a workspace is loaded */}
         {hasWorkspace && (
-          <Sidebar
-            nodes={nodes}
-            selectedNodeId={selected?.id}
-            onNodeSelect={node => {
-              if (node === null) {
-                setSelected(null);
-                setDetails('');
-              } else {
-                inspectNode(node);
-              }
-            }}
-            workspaceName={workspaceName}
-            collapsed={sidebarCollapsed}
-            onToggleCollapse={() => setSidebarCollapsed(c => !c)}
-          />
+          <div style={{ position: 'relative', display: 'flex', flexShrink: 0, height: '100%' }}>
+            <Sidebar
+              nodes={nodes}
+              selectedNodeId={selected?.id}
+              onNodeSelect={node => {
+                if (node === null) {
+                  setSelected(null);
+                  setDetails('');
+                } else {
+                  inspectNode(node);
+                }
+              }}
+              workspaceName={workspaceName}
+              collapsed={sidebarCollapsed}
+              onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+              width={sidebarCollapsed ? undefined : leftWidth}
+            />
+            {/* Left resize handle — hidden when sidebar is collapsed */}
+            {!sidebarCollapsed && (
+              <div
+                className="resize-handle resize-handle--left"
+                onMouseDown={startLeftResize}
+                title="Drag to resize"
+              />
+            )}
+          </div>
         )}
 
         {/* Main content area */}
-        <div className="app-canvas-area">
-          {/* Loading bar + streaming progress label */}
+        <div className="app-main-area">
+          <div className="app-canvas-area">
+            {/* Loading bar + streaming progress label */}
           {loading && <div className="scan-loading-bar" />}
           {loading && scanProgress.phase && (
             <div style={{
@@ -1461,7 +1868,13 @@ export default function App() {
                     <span style={{ color: 'var(--text-tertiary)', fontSize: 16, userSelect: 'none', lineHeight: 1 }}>‹</span>
                   </div>
                 ) : (
-                  <div style={styles.inspector}>
+                  <div style={{ ...styles.inspector, width: rightWidth }}>
+                    {/* Right resize handle — drag left edge to resize */}
+                    <div
+                      className="resize-handle resize-handle--right"
+                      onMouseDown={startRightResize}
+                      title="Drag to resize"
+                    />
                     <div style={styles.inspectorHeader}>
                       <span style={styles.inspectorTitle}>NODE INSPECTOR</span>
                       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -1495,15 +1908,92 @@ export default function App() {
 
                       <div style={styles.inspectorSection}>
                         <div style={styles.inspectorLabel}>ANALYSIS</div>
-                        <div style={styles.inspectorDetails}>{details}</div>
+                        <div style={styles.inspectorDetails}>
+                          <ReactMarkdown
+                            components={{
+                              // Paragraphs
+                              p: ({node, ...props}) => <p style={{margin: '0 0 8px 0', lineHeight: 1.75}} {...props} />,
+                              // Bold / italic
+                              strong: ({node, ...props}) => <strong style={{color: 'var(--text-primary)', fontWeight: 600}} {...props} />,
+                              em: ({node, ...props}) => <em style={{color: 'var(--accent-primary)', fontStyle: 'italic'}} {...props} />,
+                              // Inline code — react-markdown v10: `code` is ALWAYS inline here
+                              // Block code is wrapped in `pre` which we handle separately
+                              code: ({node, ...props}) => (
+                                <code style={{
+                                  background: 'var(--bg-secondary)',
+                                  border: '1px solid var(--border-subtle)',
+                                  borderRadius: '3px',
+                                  padding: '1px 5px',
+                                  fontSize: '11px',
+                                  fontFamily: 'monospace',
+                                  color: 'var(--accent-secondary)',
+                                  display: 'inline',
+                                }} {...props} />
+                              ),
+                              // Fenced code blocks (``` ... ```)
+                              pre: ({node, ...props}) => (
+                                <pre style={{
+                                  background: 'var(--bg-secondary)',
+                                  border: '1px solid var(--border-subtle)',
+                                  borderRadius: '4px',
+                                  padding: '10px',
+                                  fontSize: '11px',
+                                  overflowX: 'auto',
+                                  margin: '6px 0',
+                                  lineHeight: 1.5,
+                                  fontFamily: 'monospace',
+                                  color: 'var(--text-tertiary)',
+                                }} {...props} />
+                              ),
+                              // Headings
+                              h1: ({node, ...props}) => <div style={{color: 'var(--text-primary)', fontWeight: 700, fontSize: '13px', marginBottom: '6px', marginTop: '12px', letterSpacing: '0.05em', textTransform: 'uppercase'}} {...props} />,
+                              h2: ({node, ...props}) => <div style={{color: 'var(--text-primary)', fontWeight: 600, fontSize: '12px', marginBottom: '4px', marginTop: '10px'}} {...props} />,
+                              h3: ({node, ...props}) => <div style={{color: 'var(--accent-primary)', fontWeight: 600, fontSize: '12px', marginBottom: '3px', marginTop: '8px'}} {...props} />,
+                              // Lists
+                              ul: ({node, ...props}) => <ul style={{paddingLeft: '16px', margin: '3px 0 8px 0'}} {...props} />,
+                              ol: ({node, ...props}) => <ol style={{paddingLeft: '16px', margin: '3px 0 8px 0'}} {...props} />,
+                              li: ({node, ...props}) => <li style={{marginBottom: '3px', lineHeight: 1.6}} {...props} />,
+                              // Blockquote
+                              blockquote: ({node, ...props}) => <blockquote style={{borderLeft: '2px solid var(--accent-primary)', margin: '6px 0', paddingLeft: '10px', color: 'var(--text-tertiary)', fontStyle: 'italic'}} {...props} />,
+                              // Horizontal rule
+                              hr: () => <hr style={{border: 'none', borderTop: '1px solid var(--border-subtle)', margin: '10px 0'}} />,
+                            }}
+                          >
+                            {details}
+                          </ReactMarkdown>
+                        </div>
                       </div>
 
-                      {selected.code && (
-                        <div style={styles.inspectorSection}>
-                          <div style={styles.inspectorLabel}>SOURCE PREVIEW</div>
-                          <pre style={styles.codeBlock}>{selected.code}</pre>
-                        </div>
-                      )}
+
+                      {/* Dock action buttons */}
+                      <div style={{ ...styles.inspectorSection, display: 'flex', gap: '8px', marginTop: '4px' }}>
+                        <button
+                          style={{ ...styles.btnPrimary, flex: 1, padding: '8px', fontSize: '11px' }}
+                          onClick={() => openSource(selected)}
+                        >
+                          ◫ View Source
+                        </button>
+                        {/* Ask AI only for code nodes — file nodes are too large for context */}
+                        {['function', 'class', 'interface', 'struct', 'method', 'variable', 'constant'].includes(selected.type) && (
+                          <button
+                            style={{
+                              ...styles.btnPrimary,
+                              flex: 1,
+                              padding: '8px',
+                              fontSize: '11px',
+                              background: 'transparent',
+                              border: '1px solid var(--accent-primary)',
+                              color: 'var(--accent-primary)',
+                            }}
+                            onClick={() => {
+                              setDockTab('chat');
+                              setDockOpen(true);
+                            }}
+                          >
+                            ✦ Ask AI
+                          </button>
+                        )}
+                      </div>
 
                       {["function", "class"].includes(selected.type) && (
                         <div style={styles.inspectorSection}>
@@ -1523,8 +2013,8 @@ export default function App() {
 
 
 
-              <Canvas shadows onPointerMissed={() => { setSelected(null); setShowModeMenu(false); setShowExportMenu(false); setShowSettingsMenu(false); }} style={styles.canvas}>
-                <CameraHandler selected={selected} layout={layoutPositions} sphereRadius={sphereRadius} />
+              <Canvas shadows onPointerMissed={(e) => { if (e.button !== 0) return; setSelected(null); setShowModeMenu(false); setShowExportMenu(false); setShowSettingsMenu(false); }} style={styles.canvas}>
+                <CameraHandler selected={selected} layout={layoutPositions} sphereRadius={sphereRadius} focusSignal={cameraFocusSignal} dockOpen={dockOpen} />
                 <PerspectiveCamera makeDefault position={[0, sphereRadius * 2, sphereRadius * 2.8]} fov={35} far={10000} />
                 <ambientLight intensity={0.15} />
                 <pointLight position={[20, 100, 20]} intensity={2.5} color="#a3ff5c" />
@@ -1541,7 +2031,7 @@ export default function App() {
                   else if (isMultiSelected) outlineColor = '#00ffff'; // Cyan for multi-selected
 
                   return layoutPositions[n.id] && (
-                    <Float key={`${n.id}-${selected?.id || 'none'}-${isMultiSelected}`} position={layoutPositions[n.id]} speed={2}>
+                    <Float key={`${n.id}-${isMultiSelected}`} position={layoutPositions[n.id]} speed={2}>
                       {/* Outline ring for git status or selection */}
                       {outlineColor && (
                         <mesh>
@@ -1922,6 +2412,9 @@ export default function App() {
                           }
                           if (mainNode) {
                             setSelected(mainNode);
+                            // Always increment signal so CameraHandler re-fires
+                            // even if mainNode === previously selected node
+                            setCameraFocusSignal(k => k + 1);
                           } else {
                             console.warn("Node not found in main graph:", nodeId, nodeName);
                           }
@@ -1954,6 +2447,28 @@ export default function App() {
               )}
             </>
           )}
+        </div>
+        
+        {/* Bottom Dock component */}
+        <BottomDock 
+          dockOpen={dockOpen}
+          setDockOpen={setDockOpen}
+          dockHeight={dockHeight}
+          dockTab={dockTab}
+          setDockTab={setDockTab}
+          openDocument={openDocument}
+          setOpenDocument={setOpenDocument}
+          chatMessages={chatMessages}
+          setChatMessages={setChatMessages}
+          chatInput={chatInput}
+          setChatInput={setChatInput}
+          chatLoading={chatLoading}
+          sendChatMessage={sendChatMessage}
+          chatContextNode={chatContextNode}
+          setChatContextNode={setChatContextNode}
+          selected={selected}
+          startDockResize={startDockResize}
+        />
         </div>
       </div>
     </div>
@@ -2242,7 +2757,6 @@ const styles = {
     fontSize: '13px',
     color: 'var(--text-secondary)',
     lineHeight: 1.7,
-    whiteSpace: 'pre-wrap'
   },
 
   codeBlock: {
