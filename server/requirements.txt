@@ -5,3 +5,5 @@ pyahocorasick
 GitPython
 pydantic
 pyinstaller
+jsbeautifier
+nbformat
