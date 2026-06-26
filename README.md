@@ -23,7 +23,7 @@
 
 ---
 
-![Loom Demo](client/images/demo.gif)
+![Loom Demo](client/images/demo.webm)
 
 <br />
 
