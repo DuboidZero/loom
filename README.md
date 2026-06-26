@@ -25,6 +25,8 @@
 
 <video src="client/images/demo.webm" autoplay loop muted playsinline controls width="100%"></video>
 
+<div align="center">
+
 <br />
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
