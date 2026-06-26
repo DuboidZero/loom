@@ -12,7 +12,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/DuboidZero/loom?style=flat-square&color=6c63ff&label=version)](https://github.com/DuboidZero/loom/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-brightgreen?style=flat-square)](https://github.com/DuboidZero/loom/releases)
-[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-orange?style=flat-square&logo=tauri)](https://tauri.app)
 [![Python](https://img.shields.io/badge/backend-Python%203-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![React](https://img.shields.io/badge/frontend-React%2019-61dafb?style=flat-square&logo=react&logoColor=black)](https://react.dev)
@@ -23,7 +23,7 @@
 
 ---
 
-![Loom Demo](client/images/demo.webm)
+<video src="client/images/demo.webm" autoplay loop muted playsinline controls width="100%"></video>
 
 <br />
 
@@ -334,7 +334,7 @@ npm start
 
 ## License
 
-MIT © 
+Apache 2.0 © [DuboidZero](https://github.com/DuboidZero)
 
 ---
 
