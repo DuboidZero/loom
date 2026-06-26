@@ -21,13 +21,13 @@
 
 [**Download**](#-installation) · [**How It Works**](#-how-it-works) · [**Architecture**](#-architecture) · [**Philosophy**](#-philosophy)
 
+</div>
+
 ---
 
 <video src="client/images/demo.webm" autoplay loop muted playsinline controls width="100%"></video>
 
 <div align="center">
-
-<br />
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
