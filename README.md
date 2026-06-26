@@ -25,7 +25,7 @@
 
 ---
 
-<video src="client/images/demo.webm" autoplay loop muted playsinline controls width="100%"></video>
+[![Demo](client/images/demo.webm)](https://github.com/user-attachments/assets/43ebfe10-2d1f-4789-87a2-65fcc48e8a79)
 
 <div align="center">
 
