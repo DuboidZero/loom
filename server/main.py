@@ -1694,7 +1694,11 @@ async def node_source(req: NodeSourceRequest):
         # Path traversal guard — resolved path must stay within the repo root.
         safe_root = os.path.realpath(current_repo_path) if current_repo_path else None
         resolved = os.path.realpath(actual_path)
-        if not safe_root or not _is_within_path(resolved, safe_root):
+        if (
+            not safe_root
+            or os.path.commonpath([resolved, safe_root]) != safe_root
+            or not os.path.isfile(resolved)
+        ):
             return {"error": "Path outside repository", "code": ""}
 
         with open(resolved, "r", encoding="utf-8") as f:
