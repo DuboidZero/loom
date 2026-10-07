@@ -12,6 +12,19 @@ import logo from './logo.png';
 const RECENT_KEY = 'loom_recent_workspaces';
 const MAX_RECENT = 8;
 
+function isGithubRepositoryUrl(value) {
+  const raw = (value || '').trim();
+  if (!raw) return false;
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(withScheme);
+    const host = parsed.hostname.toLowerCase();
+    return host === 'github.com' || host === 'www.github.com';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reads recent workspaces from localStorage.
  */
@@ -44,7 +57,7 @@ export default function WelcomeScreen({ onOpenFolder, onOpenGithub }) {
       setGithubError('Please enter a GitHub URL.');
       return;
     }
-    if (!trimmed.includes('github.com') && !trimmed.startsWith('http')) {
+    if (!isGithubRepositoryUrl(trimmed)) {
       setGithubError('Enter a valid GitHub repository URL.');
       return;
     }
