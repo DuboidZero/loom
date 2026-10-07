@@ -1694,20 +1694,18 @@ async def node_source(req: NodeSourceRequest):
         if ":" not in node_id:
             return {"error": "Invalid node id", "code": ""}
 
-        rel_path = str(node.get("path", ""))
-        if not rel_path:
+        requested_path = req.file_path.replace("\\", "/").strip()
+        if not requested_path:
+            requested_path = str(node.get("path", ""))
+        if not requested_path:
             return {"error": "Source path unavailable", "code": ""}
-        normalized_rel = rel_path.replace("\\", "/").lstrip("/")
+        normalized_rel = requested_path.lstrip("/")
 
         # Path traversal guard — resolved path must stay within the repo root.
         safe_root = os.path.realpath(current_repo_path) if current_repo_path else None
         resolved = os.path.realpath(os.path.join(safe_root, normalized_rel)) if safe_root else ""
-        allowed_files = {os.path.realpath(p) for p in _collect_files(safe_root)} if safe_root else set()
-        if (
-            not safe_root
-            or os.path.commonpath([resolved, safe_root]) != safe_root
-            or resolved not in allowed_files
-        ):
+        safe_prefix = safe_root if (safe_root and safe_root.endswith(os.sep)) else (safe_root + os.sep if safe_root else "")
+        if not safe_root or (resolved != safe_root and not resolved.startswith(safe_prefix)) or not os.path.isfile(resolved):
             return {"error": "Path outside repository", "code": ""}
 
         with open(resolved, "r", encoding="utf-8") as f:
