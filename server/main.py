@@ -1686,14 +1686,12 @@ async def node_source(req: NodeSourceRequest):
     
     # If not in cache (e.g., file node), try to read from disk
     try:
-        actual_path = req.file_path
-        if not os.path.exists(actual_path):
-            rel_path = req.node_id.split(':')[1] if ':' in req.node_id else req.node_id
-            actual_path = os.path.join(current_repo_path, rel_path)
+        rel_path = req.node_id.split(':', 1)[1] if ':' in req.node_id else req.node_id
+        normalized_rel = rel_path.replace("\\", "/").lstrip("/")
 
         # Path traversal guard — resolved path must stay within the repo root.
         safe_root = os.path.realpath(current_repo_path) if current_repo_path else None
-        resolved = os.path.realpath(actual_path)
+        resolved = os.path.realpath(os.path.join(safe_root, normalized_rel)) if safe_root else ""
         if (
             not safe_root
             or os.path.commonpath([resolved, safe_root]) != safe_root
