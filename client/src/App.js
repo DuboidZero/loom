@@ -15,6 +15,19 @@ import BottomDock from './BottomDock';
 
 const LAST_WORKSPACE_KEY = 'loom_last_workspace';
 
+function isGithubRepositoryUrl(value) {
+  const raw = (value || '').trim();
+  if (!raw) return false;
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(withScheme);
+    const host = parsed.hostname.toLowerCase();
+    return host === 'github.com' || host === 'www.github.com';
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // TopMenuBar — VSCode-style slim menu bar
 // ---------------------------------------------------------------------------
@@ -444,7 +457,7 @@ export default function App() {
     
     let code = node.code;
     if (!code) {
-      const isGithub = repoPath.startsWith("http") || repoPath.includes("github.com");
+      const isGithub = isGithubRepositoryUrl(repoPath);
       const filePath = isGithub ? (node.id.split(':')[1] || node.label) : repoPath.replace(/\\/g, "/") + "/" + (node.id.split(':')[1] || node.label);
       try {
         const res = await fetch(`${API}/node-source`, {
@@ -517,7 +530,7 @@ export default function App() {
     // body to extract) and skip if code was somehow already populated.
     if (selected && selected.type !== 'file' && !context.code) {
       try {
-        const isGithub = repoPath.startsWith('http') || repoPath.includes('github.com');
+        const isGithub = isGithubRepositoryUrl(repoPath);
         const filePath = isGithub
           ? (selected.id.split(':')[1] || selected.label)
           : repoPath.replace(/\\/g, '/') + '/' + (selected.id.split(':')[1] || selected.label);
@@ -814,7 +827,7 @@ export default function App() {
     streamBufferRef.current = { nodes: [], links: [] };
     setScanProgress({ files: 0, total: 0, phase: 'Scanning...' });
 
-    const isGithub = repoPath.startsWith("http") || repoPath.includes("github.com");
+    const isGithub = isGithubRepositoryUrl(repoPath);
 
     if (isGithub) {
       // GitHub: keep existing blocking fetch (must wait for clone anyway)
@@ -1233,7 +1246,7 @@ export default function App() {
     }
     // Note: file nodes exit early above.
 
-    const isGithub = repoPath.startsWith("http") || repoPath.includes("github.com");
+    const isGithub = isGithubRepositoryUrl(repoPath);
     const filePath = isGithub
       ? (node.id.split(':')[1] || node.label)
       : repoPath.replace(/\\/g, "/") + "/" + (node.id.split(':')[1] || node.label);
@@ -1536,7 +1549,7 @@ export default function App() {
     setView('map');
     const cleanPath = path.replace(/\\/g, '/');
     let endpoint = `${API}/map-repo?path=${encodeURIComponent(cleanPath)}`;
-    if (path.startsWith('http') || path.includes('github.com')) {
+    if (isGithubRepositoryUrl(path)) {
       endpoint = `${API}/map-github?repo_url=${encodeURIComponent(path.trim())}`;
     }
     try {
@@ -1550,7 +1563,7 @@ export default function App() {
       localStorage.setItem(LAST_WORKSPACE_KEY, path);
       saveRecentWorkspace(path);
       // Git status
-      if (!path.startsWith('http') && !path.includes('github.com')) {
+      if (!isGithubRepositoryUrl(path)) {
         fetchGitStatus(cleanPath);
       }
     } catch (e) { alert('Error: ' + e.message); }

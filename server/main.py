@@ -1,4 +1,4 @@
-import os, re, ast, json, shutil, requests, nbformat, stat, time, sys, subprocess, hashlib
+import os, re, ast, json, shutil, requests, nbformat, stat, time, sys, subprocess, hashlib, logging
 from collections import defaultdict, deque
 import ahocorasick
 from datetime import datetime, timezone
@@ -117,6 +117,7 @@ def _find_calls_ac(code: str, current_name: str, automaton) -> list:
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+logger = logging.getLogger(__name__)
 
 # --- Configuration & Constants ---
 
@@ -240,6 +241,15 @@ def _collect_files(repo_path: str) -> list:
             if os.path.splitext(file)[1].lower() in VALID_EXTS:
                 file_paths.append((os.path.join(root, file), repo_path))
     return file_paths
+
+
+def _is_within_path(path: str, root: str) -> bool:
+    """Returns True when `path` is inside `root` after realpath normalization."""
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(root)]) == os.path.realpath(root)
+    except ValueError:
+        # Different drives on Windows can raise ValueError.
+        return False
 
 
 class ConfigUpdate(BaseModel):
@@ -1411,7 +1421,8 @@ async def map_github(repo_url: str):
         time.sleep(0.5)
         return await map_repo(TEMP_REPO_DIR)
     except Exception as e: 
-        return {"error": str(e)}
+        logger.exception("CodeQL(CodeQL): map_github failed")
+        return {"error": "Failed to clone and analyze repository."}
 
 @app.post("/reverse-call-flow")
 async def reverse_call_flow(req: ReverseCallFlowRequest):
@@ -1428,7 +1439,8 @@ async def reverse_call_flow(req: ReverseCallFlowRequest):
         )
         return result
     except Exception as e:
-        return {"error": str(e)}
+        logger.exception("CodeQL(CodeQL): reverse_call_flow failed")
+        return {"error": "Unable to build reverse call flow."}
 
 @app.post("/forward-call-flow")
 async def forward_call_flow(req: ForwardCallFlowRequest):
@@ -1446,7 +1458,8 @@ async def forward_call_flow(req: ForwardCallFlowRequest):
         )
         return result
     except Exception as e:
-        return {"error": str(e)}
+        logger.exception("CodeQL(CodeQL): forward_call_flow failed")
+        return {"error": "Unable to build forward call flow."}
 
 
 def find_documentation_files(file_path: str, repo_root: str) -> str:
@@ -1681,14 +1694,15 @@ async def node_source(req: NodeSourceRequest):
         # Path traversal guard — resolved path must stay within the repo root.
         safe_root = os.path.realpath(current_repo_path) if current_repo_path else None
         resolved = os.path.realpath(actual_path)
-        if safe_root and not resolved.startswith(safe_root):
+        if not safe_root or not _is_within_path(resolved, safe_root):
             return {"error": "Path outside repository", "code": ""}
 
-        with open(actual_path, "r", encoding="utf-8") as f:
+        with open(resolved, "r", encoding="utf-8") as f:
             code = f.read()
         return {"code": code}
     except Exception as e:
-        return {"error": str(e), "code": ""}
+        logger.exception("CodeQL(CodeQL): node_source failed")
+        return {"error": "Unable to read source for this node.", "code": ""}
 
 @app.post("/get-details")
 async def get_details(req: DetailRequest):
@@ -1788,7 +1802,8 @@ async def get_details(req: DetailRequest):
                             break
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            logger.exception("CodeQL(CodeQL): get_details stream failed")
+            yield f"data: {json.dumps({'error': 'Unable to generate details right now.'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -2080,7 +2095,8 @@ async def chat(req: ChatRequest):
                             break
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            logger.exception("CodeQL(CodeQL): chat stream failed")
+            yield f"data: {json.dumps({'error': 'Unable to generate chat response right now.'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -2114,7 +2130,8 @@ async def clear_cache():
         _nodes_by_id = {}
         return {"status": "success", "message": f"Cleared {disk_deleted} cache file(s) and reset graph state."}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.exception("CodeQL(CodeQL): clear_cache failed")
+        return {"status": "error", "message": "Failed to clear cache."}
 
 class ExportRequest(BaseModel):
     node_ids: list[str] = []  # Empty = full graph, otherwise subgraph
@@ -2192,7 +2209,9 @@ async def git_status(req: GitStatusRequest):
     Returns Git working-tree status for files in the repository.
     Maps file status (M/A/D) to graph node IDs.
     """
-    repo_path = req.repo_path.replace("\\", "/")
+    repo_path = os.path.realpath(req.repo_path.replace("\\", "/"))
+    if current_repo_path and not _is_within_path(repo_path, os.path.realpath(current_repo_path)):
+        return {"is_git_repo": False, "status": {}, "error": "Path outside current repository"}
     
     # Check if directory is a git repository
     git_dir = os.path.join(repo_path, ".git")
@@ -2272,7 +2291,8 @@ async def git_status(req: GitStatusRequest):
     except subprocess.TimeoutExpired:
         return {"is_git_repo": True, "status": {}, "error": "Git command timed out"}
     except Exception as e:
-        return {"is_git_repo": False, "status": {}, "error": str(e)}
+        logger.exception("CodeQL(CodeQL): git_status failed")
+        return {"is_git_repo": False, "status": {}, "error": "Unable to read git status."}
 
 if __name__ == "__main__":
     import multiprocessing
