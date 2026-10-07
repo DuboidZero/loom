@@ -5,7 +5,7 @@
 # ---------------------------------------------------------------------------
 # Resolve repo root relative to this script's location
 # ---------------------------------------------------------------------------
-set REPO_ROOT (dirname (status filename))
+set REPO_ROOT (realpath (dirname (status filename)))
 set VENV_PYTHON $REPO_ROOT/loom-venv/bin/python
 set SERVER_PY   $REPO_ROOT/server/main.py
 set CLIENT_DIR  $REPO_ROOT/client
