@@ -742,6 +742,7 @@ def parse_file_structure(file_path: str, base_path: str) -> tuple:
                 )
             else:
                 source = f.read()
+        nodes[0]['code'] = source
     except Exception:
         return nodes, links, found_symbols
 
@@ -1679,41 +1680,12 @@ async def node_source(req: NodeSourceRequest):
     """
     Returns the source code for a specific node, or the entire file if it's a file node.
     """
-    # Try to get from cached nodes first (functions/classes have code stored)
-    code = _nodes_by_id.get(req.node_id, {}).get("code", "")
-    if code:
-        return {"code": code}
-    
-    # If not in cache (e.g., file node), try to read from disk
-    try:
-        node = _nodes_by_id.get(req.node_id)
-        if not node:
-            return {"error": "Node not found", "code": ""}
-
-        node_id = str(node.get("id", ""))
-        if ":" not in node_id:
-            return {"error": "Invalid node id", "code": ""}
-
-        requested_path = req.file_path.replace("\\", "/").strip()
-        if not requested_path:
-            requested_path = str(node.get("path", ""))
-        if not requested_path:
-            return {"error": "Source path unavailable", "code": ""}
-        normalized_rel = requested_path.lstrip("/")
-
-        # Path traversal guard — resolved path must stay within the repo root.
-        safe_root = os.path.realpath(current_repo_path) if current_repo_path else None
-        resolved = os.path.realpath(os.path.join(safe_root, normalized_rel)) if safe_root else ""
-        safe_prefix = safe_root if (safe_root and safe_root.endswith(os.sep)) else (safe_root + os.sep if safe_root else "")
-        if not safe_root or (resolved != safe_root and not resolved.startswith(safe_prefix)) or not os.path.isfile(resolved):
-            return {"error": "Path outside repository", "code": ""}
-
-        with open(resolved, "r", encoding="utf-8") as f:
-            code = f.read()
-        return {"code": code}
-    except Exception as e:
-        logger.exception("CodeQL(CodeQL): node_source failed")
-        return {"error": "Unable to read source for this node.", "code": ""}
+    node = _nodes_by_id.get(req.node_id)
+    if not node:
+        return {"error": "Node not found", "code": ""}
+    if "code" not in node:
+        return {"error": "Source unavailable for this node.", "code": ""}
+    return {"code": node.get("code", "")}
 
 @app.post("/get-details")
 async def get_details(req: DetailRequest):
