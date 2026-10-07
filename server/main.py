@@ -1686,7 +1686,15 @@ async def node_source(req: NodeSourceRequest):
     
     # If not in cache (e.g., file node), try to read from disk
     try:
-        rel_path = req.node_id.split(':', 1)[1] if ':' in req.node_id else req.node_id
+        node = _nodes_by_id.get(req.node_id)
+        if not node:
+            return {"error": "Node not found", "code": ""}
+
+        node_id = str(node.get("id", ""))
+        if ":" not in node_id:
+            return {"error": "Invalid node id", "code": ""}
+
+        rel_path = node_id.split(":", 1)[1]
         normalized_rel = rel_path.replace("\\", "/").lstrip("/")
 
         # Path traversal guard — resolved path must stay within the repo root.
