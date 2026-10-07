@@ -1694,7 +1694,9 @@ async def node_source(req: NodeSourceRequest):
         if ":" not in node_id:
             return {"error": "Invalid node id", "code": ""}
 
-        rel_path = node_id.split(":", 1)[1]
+        rel_path = str(node.get("path", ""))
+        if not rel_path:
+            return {"error": "Source path unavailable", "code": ""}
         normalized_rel = rel_path.replace("\\", "/").lstrip("/")
 
         # Path traversal guard — resolved path must stay within the repo root.
