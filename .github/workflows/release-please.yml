@@ -18,10 +18,14 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       upload_url: ${{ steps.release.outputs.upload_url }}
     steps:
+      # Requires a repository secret RELEASE_PLEASE_TOKEN set to a PAT or
+      # GitHub App token with permissions:
+      #   - Repository contents: read/write
+      #   - Pull requests: read/write
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
