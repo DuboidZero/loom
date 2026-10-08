@@ -1,14 +1,29 @@
 name: Build Linux
 
 on:
-  workflow_dispatch:
+  # Regular CI: run on every push/PR to main
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # Manual trigger (useful for debugging builds)
+  workflow_dispatch:
+  # Called by release-please.yml when a GitHub Release is created
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "The release tag (e.g. v4.1.0)"
+        type: string
+        required: false
+        default: ""
+      upload_url:
+        description: "GitHub Release upload URL for attaching assets"
+        type: string
+        required: false
+        default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -50,10 +65,51 @@ jobs:
         working-directory: client
         run: npm run build:linux
 
-      - name: Upload Artifacts
+      # ── Regular CI: upload as workflow artifact ──────────────────────────
+      - name: Upload CI Artifacts
+        if: inputs.upload_url == ''
         uses: actions/upload-artifact@v4
         with:
           name: linux-installers
           path: |
             client/src-tauri/target/release/bundle/appimage/*.AppImage
             client/src-tauri/target/release/bundle/deb/*.deb
+
+      # ── Release build: attach files to the GitHub Release ────────────────
+      - name: Find AppImage
+        if: inputs.upload_url != ''
+        id: find_appimage
+        run: |
+          FILE=$(find client/src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
+          echo "path=$FILE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename $FILE)" >> "$GITHUB_OUTPUT"
+
+      - name: Find .deb
+        if: inputs.upload_url != ''
+        id: find_deb
+        run: |
+          FILE=$(find client/src-tauri/target/release/bundle/deb -name "*.deb" | head -1)
+          echo "path=$FILE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename $FILE)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload AppImage to GitHub Release
+        if: inputs.upload_url != '' && steps.find_appimage.outputs.path != ''
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ inputs.upload_url }}
+          asset_path: ${{ steps.find_appimage.outputs.path }}
+          asset_name: ${{ steps.find_appimage.outputs.name }}
+          asset_content_type: application/octet-stream
+
+      - name: Upload .deb to GitHub Release
+        if: inputs.upload_url != '' && steps.find_deb.outputs.path != ''
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ inputs.upload_url }}
+          asset_path: ${{ steps.find_deb.outputs.path }}
+          asset_name: ${{ steps.find_deb.outputs.name }}
+          asset_content_type: application/vnd.debian.binary-package

@@ -1,0 +1,47 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      upload_url: ${{ steps.release.outputs.upload_url }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Once Release Please creates the GitHub Release, trigger both build jobs
+  build-linux:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
+      upload_url: ${{ needs.release-please.outputs.upload_url }}
+    permissions:
+      contents: write
+
+  build-windows:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
+      upload_url: ${{ needs.release-please.outputs.upload_url }}
+    permissions:
+      contents: write

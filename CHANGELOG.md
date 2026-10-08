@@ -1,20 +1,37 @@
 # Changelog
 
-## 🚀 Added
+All notable changes to Loom are documented here.
+This file is automatically updated by [Release Please](https://github.com/googleapis/release-please) using [Conventional Commits](https://www.conventionalcommits.org/).
 
-### AI Chat
+---
+
+<!-- RELEASE-PLEASE-START -->
+<!-- New versions will be prepended above this line by Release Please -->
+<!-- RELEASE-PLEASE-END -->
+
+---
+
+## Historical Changelog (pre-automation)
+
+The following entries were written manually before automated changelogs were introduced.
+
+### v0.4.0 and prior
+
+#### 🚀 Added
+
+##### AI Chat
 
 * Added an integrated AI chat assistant for repository-aware code analysis.
 * Supports conversational questions about functions, architecture, bugs, implementation details, and design decisions.
 * Added automatic conversation routing between technical analysis and casual conversation.
 
-### Source Viewer
+##### Source Viewer
 
 * Added an integrated source code viewer.
 * View the complete implementation of any selected node directly inside Loom.
 * Syntax highlighting based on file language.
 
-### Repository-Aware AI Context
+##### Repository-Aware AI Context
 
 The AI now receives significantly richer repository context when answering questions.
 
@@ -32,9 +49,9 @@ This allows the assistant to reason about **how code is actually used**, rather 
 
 ---
 
-## ✨ Improved
+#### ✨ Improved
 
-### AI Analysis Quality
+##### AI Analysis Quality
 
 * Introduced evidence-based reasoning principles.
 * Improved architectural explanations.
@@ -45,23 +62,18 @@ This allows the assistant to reason about **how code is actually used**, rather 
 * Improved confidence reporting.
 * Reduced unsupported assumptions.
 
-### Conversation Experience
+##### Conversation Experience
 
-* AI now distinguishes between:
-
-  * Code analysis
-  * Bug investigation
-  * Architecture discussion
-  * Casual conversation
+* AI now distinguishes between code analysis, bug investigation, architecture discussion, and casual conversation.
 * Natural conversations no longer force analysis formatting.
 
-### Context Management
+##### Context Management
 
 * Added automatic chat history trimming.
 * Reduced prompt size for long conversations.
 * Improved response speed for local models.
 
-### Internal Prompting
+##### Internal Prompting
 
 * Refactored system prompt generation.
 * Simplified prompt assembly.
@@ -70,16 +82,15 @@ This allows the assistant to reason about **how code is actually used**, rather 
 
 ---
 
-## 🐧 Platform Support
+#### 🐧 Platform Support
 
-### Linux
+##### Linux
 
-* Added Linux support.
-* Currently tested on Arch Linux.
+* Added Linux support. Currently tested on Arch Linux.
 
 ---
 
-## 🛠 Internal
+#### 🛠 Internal
 
 * Refactored AI context construction.
 * Improved repository context injection.
