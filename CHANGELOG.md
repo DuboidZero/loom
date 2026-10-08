@@ -15,6 +15,14 @@ This file is automatically updated by [Release Please](https://github.com/google
 
 The following entries were written manually before automated changelogs were introduced.
 
+## [5.1.0](https://github.com/DuboidZero/loom/compare/loom-v5.0.0...loom-v5.1.0) (2026-10-08)
+
+
+### ### Features
+
+* add AI chat, source viewer, Linux support, and repository-aware context ([ed4ecba](https://github.com/DuboidZero/loom/commit/ed4ecba40a4667ac15e3c0248c4a50b95ec02cf8))
+* lord save my github actions [#3](https://github.com/DuboidZero/loom/issues/3) ([ed8b9d2](https://github.com/DuboidZero/loom/commit/ed8b9d29359e45de85406d4e184258368717e7b9))
+
 ### v0.4.0 and prior
 
 #### 🚀 Added
